@@ -1,0 +1,110 @@
+{
+  "request": {
+    "system": "system",
+    "messages": [{"role": "user", "content": "hello"}],
+    "model": "model",
+    "max_output_tokens": 32
+  },
+  "expected_request": {
+    "relative_path": "/v1/messages",
+    "json_body": {
+      "max_tokens": 32,
+      "messages": [{"role": "user", "content": "hello"}],
+      "model": "model",
+      "output_config": {
+        "format": {
+          "type": "json_schema",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "response": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {"type": "string", "enum": ["run"]},
+                      "purpose": {"type": "string"},
+                      "command": {"type": "string"}
+                    },
+                    "required": ["action", "purpose", "command"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {"type": "string", "enum": ["clarify"]},
+                      "questions": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "multiple": {"type": "boolean"},
+                            "choices": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {"type": "string"},
+                                  "label": {"type": "string"}
+                                },
+                                "required": ["id", "label"],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": ["id", "prompt", "multiple", "choices"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["action", "questions"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "action": {"type": "string", "enum": ["done"]},
+                      "answer": {"type": "string"}
+                    },
+                    "required": ["action", "answer"],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": ["response"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "system": "system",
+      "thinking": {"type": "disabled"}
+    }
+  },
+  "success_response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "content": [
+        {"type": "text", "text": "{\"response\":{\"action\":\"done\",\"answer\":\"done\"}}"}
+      ],
+      "stop_reason": "end_turn",
+      "usage": {"input_tokens": 10, "output_tokens": 8}
+    }
+  },
+  "expected_success": {
+    "text": "{\"response\":{\"action\":\"done\",\"answer\":\"done\"}}",
+    "finish_reason": "completed"
+  },
+  "error_response": {
+    "status": 401,
+    "headers": {},
+    "body": {
+      "type": "error",
+      "error": {"type": "authentication_error", "message": "bad key"}
+    }
+  },
+  "expected_error": {"kind": "authentication", "retry_after_ms": null}
+}

@@ -1,0 +1,36 @@
+{
+  "request": {
+    "system": "system",
+    "messages": [{"role": "user", "content": "hello"}],
+    "model": "model",
+    "max_output_tokens": 32
+  },
+  "expected_request": {
+    "relative_path": "/v1/messages",
+    "json_body": {
+      "max_tokens": 32,
+      "messages": [{"role": "user", "content": "hello"}],
+      "model": "model",
+      "system": "system",
+      "thinking": {"type": "disabled"}
+    }
+  },
+  "success_response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "content": [{"type": "text", "text": "done"}],
+      "stop_reason": "max_tokens"
+    }
+  },
+  "expected_success": {"text": "done", "finish_reason": "output_limit"},
+  "error_response": {
+    "status": 401,
+    "headers": {},
+    "body": {
+      "type": "error",
+      "error": {"type": "authentication_error", "message": "bad key"}
+    }
+  },
+  "expected_error": {"kind": "authentication", "retry_after_ms": null}
+}

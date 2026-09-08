@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "format": "openai@0.3.0",
+      "file": "openai@0.3.0.zhcodec",
+      "sha256": "d92283d9d15518ecc5e06e1e83ef676b5c8f394a45b5f897bd3666b67a4f43cd",
+      "key_fingerprint": "cbd1d03bb811a7dfe5ff3149e8e45fafcfcadf9b9dbf6c32c78814a31eff583e",
+      "source_crate": "zhcodec-openai",
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "sdk": "zhcodec-sdk@0.3.0",
+      "payload_schema": 3,
+      "upstream_protocol": "OpenAI Responses /v1/responses; default=json_object; optional json_schema(strict); store=false; reasoning.effort=none"
+    },
+    {
+      "format": "anthropic@0.3.0",
+      "file": "anthropic@0.3.0.zhcodec",
+      "sha256": "4eab404dca90376ba2f00b8313f9712bcf0cc55f861395a2cbc77fa78cacf43a",
+      "key_fingerprint": "cbd1d03bb811a7dfe5ff3149e8e45fafcfcadf9b9dbf6c32c78814a31eff583e",
+      "source_crate": "zhcodec-anthropic",
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "sdk": "zhcodec-sdk@0.3.0",
+      "payload_schema": 3,
+      "upstream_protocol": "Anthropic Messages /v1/messages; optional output_config.format=json_schema; anthropic-version=2023-06-01; thinking=disabled"
+    }
+  ]
+}

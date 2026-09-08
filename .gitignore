@@ -1,0 +1,5 @@
+.env
+/target/
+**/target/
+.zhcodec-keys/
+.idea/

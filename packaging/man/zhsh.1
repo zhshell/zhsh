@@ -1,0 +1,594 @@
+.\" -*- coding: UTF-8 -*-
+.TH ZHSH 1 "2026-09-08" "zhsh 0.1.0" "用户命令"
+.nh
+.na
+.SH 名称
+zhsh \- 支持非 ASCII Agent 输入的 AI 增强 Shell
+.SH 概要
+.B zhsh
+.RI [ --help | --version | --trace-agent ]
+.SH 选项
+.TP
+.BR \-h , " " \-\-help
+显示进程级用法并退出，不启动 Shell。
+.TP
+.BR \-V , " " \-\-version
+显示与 Cargo 和 Debian 包一致的版本并退出。
+.TP
+.B \-\-trace-agent
+启动 Shell，并在当前进程临时记录严格协议无法解析的 Agent 原始响应。
+日志位于
+.IR ~/.zhsh/diagnostics/invalid-agent-responses.jsonl
+，可能包含用户任务和 Provider 返回内容；默认启动不记录原文。
+.PP
+其他进程级参数返回状态码 2，不会静默启动 Shell。
+.SH 描述
+.B zhsh
+是一个交互式 Shell。
+普通命令和完整 Shell 语法由
+.BR bash (1)
+执行。
+.PP
+去除边界空白后，ASCII 首字符输入进入普通 Shell 路径，非 ASCII 首字符输入进入 LLM
+Agent。路由器不分析意图、不查询 PATH 或命令表，也不改写输入内容，因此 ASCII 开头且含
+Unicode 参数的 Bash 脚本会保持原文执行。
+.PP
+Agent 每个执行阶段最多发起六次模型请求；\:一次轮次是一次 Request-Response 交互。
+单个任务最多澄清三次，\:每次回答后开启新的六轮阶段。
+终端显示阶段切换、完整命令、必要的风险确认和最终摘要；\:不显示步骤用途或命令反馈元数据。
+.SH 输入
+普通命令可以直接输入：
+.PP
+.EX
+ls -la
+ps aux | grep java
+export EDITOR=vim
+.EE
+.PP
+重定向、后台执行、变量或命令展开和通配符由 Bash 解释。普通管道也由 Bash 解释；当整行
+第一命令是输出型 zhsh 内建命令、左段只含字面参数且后接普通 | 时，父 zhsh 生成左段输出，
+管道右侧仍由 Bash 解释。例如：
+.PP
+.EX
+history | grep cargo
+zh safety | grep java
+.EE
+.PP
+该保证只覆盖管道最左侧第一段，不覆盖后续位置、间接包装、左段重定向、|& 或 ||。
+.PP
+也可以直接输入非 ASCII 首字符任务：
+.PP
+.EX
+检查当前系统负荷
+找出当前目录最大的五个文件
+.EE
+.PP
+例如，
+.B git中是否存在回溯指令
+和以
+.B for
+开头、包含中文文件名的循环都保持原文进入 Shell；
+.B 检查当前系统负荷
+则进入 Agent。
+.PP
+英文自然语言因 ASCII 首字符进入 Shell；全角文字、其他语言和 Emoji 因非 ASCII 首字符
+进入 Agent。非 ASCII 命令名需要进入 Shell 时，可使用 ./、command 或其他 ASCII 前缀。
+路由不为 Unicode 字符类别或特殊字符增加例外。
+.SH 内建命令
+.TP
+.B cd [\-L|\-P] [\fI目录\fR]
+切换当前目录。
+省略目录时进入 HOME；使用减号返回 OLDPWD 并显示目标。
+\-L 保留逻辑路径，\-P 解析符号链接。
+.TP
+.B pwd [\-L|\-P]
+显示逻辑或物理工作目录。
+.TP
+.B pushd [\fI目录\fR]
+保存当前目录并切换到目标。
+省略目录时交换当前目录和栈顶。
+.TP
+.B popd
+弹出目录栈顶并切换到该目录。
+.TP
+.B dirs [\-clpv]
+显示目录栈。
+\-c 清空栈，\-p 每行一个，\-v 显示序号，
+\-l 不把 HOME 缩写为波浪号。
+.TP
+.B export [\-n] [\fI名称[=值]\fR ...]
+设置或显示导出的环境变量。
+不带参数或使用 \-p 时列出环境；\-n 取消导出但保留普通变量值。
+.TP
+.B unset [\-v] [\fI名称\fR ...]
+删除当前会话中的导出环境和同名普通变量。
+.TP
+.B umask [\-S] [\fI八进制掩码\fR]
+显示或设置文件创建掩码。
+\-S 使用符号形式显示。
+.TP
+.B alias [\fI名称[=命令]\fR ...]
+创建、查询或列出别名。
+.TP
+.B unalias [\-a] \fI名称\fR [\fI名称\fR ...]
+删除一个或多个别名；\-a 删除全部别名。
+.TP
+.B source \fI文件\fR [\fI参数\fR ...]
+使用 Bash 执行文件，并同步导出环境、当前目录、别名、
+Shell 函数和可重放普通变量。
+.TP
+.B . \fI文件\fR [\fI参数\fR ...]
+与
+.B source
+相同。
+.TP
+.B type [\-atpP] \fI名称\fR [\fI名称\fR ...]
+说明名称是别名、Shell 函数、zhsh 内建命令还是 PATH 程序。
+.TP
+.B help [\fI内建命令\fR]
+列出内建命令，或显示指定命令的用途、用法、选项和关键限制。
+.B history -h
+与
+.B help history
+使用同一份命令注册表事实。
+.TP
+.B history [\fI数量\fR]
+显示用户主提示符中的已保存输入。
+指定数量时只显示最近若干条。
+.TP
+.B fg
+恢复最近一次被 Ctrl-Z 暂停的整行前台命令。
+当前只支持无参数形式，不提供作业编号或完整 job control。
+.TP
+.B exit [\fI状态码\fR]
+退出 zhsh。
+省略状态码时沿用上一条命令状态；无效参数只报错，不退出。
+.SH ZH 管理命令
+.TP
+.B zh
+显示当前 LLM 配置状态和有效 Agent 授信等级。
+.TP
+.B zh status
+与裸
+.B zh
+相同。
+输出配置名、Codec、URL、传输分类、当前档位、当前模型、
+各档位模型、脱敏 access-token 和有效 Agent 授信等级。
+使用
+.B zh status -h
+查看专用帮助。
+.TP
+.B zh ls
+列出全部持久化 LLM 配置。
+空输出表示没有持久化配置；使用
+.B zh ls -h
+查看专用帮助。
+.TP
+.B zh use \fI配置名\fR
+加载并立即启用配置，同时记录为下次启动时自动恢复的配置。
+使用
+.B zh use -h
+查看专用帮助。
+.TP
+.B zh llm [配置名]
+创建配置。\:省略名称时由向导询问；\:指定名称时直接带入创建流程。
+.TP
+.B zh llm \-m|\-\-modify [配置名]
+修改配置。\:省略名称时提示输入已有配置名，\:当前配置作为默认值；
+指定名称时直接加载。
+.TP
+.B zh llm \-h|\-\-help
+显示 LLM 配置命令的专用用法。
+.TP
+.B zh tier \fIflash|standard|max\fR
+切换当前配置的模型档位并写回配置文件。
+使用
+.B zh tier -h
+查看专用帮助。
+.TP
+.B zh trust [\-w] [\fIbalanced|confirm|trusted\fR]
+无等级时显示当前有效 Agent 授信等级。
+指定等级时默认只修改当前会话；
+.B \-w
+同时在
+.I ~/.zhshrc
+末尾维护 zhsh 专用配置块。仅指定
+.B \-w
+时写入当前有效等级。
+使用
+.B zh trust -h
+查看等级和持久化边界。
+.TP
+.B zh safety
+以纯文本表格列出当前进程内存中的 Safety 规则路由、builtin/local 来源、加载顺序、mtime、规则数
+以及 active、loaded 或 shadowed 状态。表格按 Unicode 显示宽度对齐，不使用制表符。
+.TP
+.B zh safety -t [ISOURCER]
+省略 SOURCE 时重新扫描并严格校验磁盘候选；指定一个普通规则或 gzip 全量包时只校验该输入。
+两种形式都不修改当前规则或 generation。
+.TP
+.B zh safety assess 'ICOMMANDR'
+使用当前会话、Safety 快照和授信等级解释命令的程序语义、命中规则、规范目标、绑定等级与最终决策，
+但不执行该命令。适合排查规则已经 loaded、命令却仍要求确认的情况。
+.TP
+.B zh safety reload
+严格校验全部候选；成功时原子切换到下一 generation，失败时保留当前规则。
+.TP
+.B zh safety install [--overwrite] \fIFILE.zhse.json ...\fR
+使用生产规则解析器校验一个或多个本地普通文件，并按 JSON name 以 0600 原子安装到固定用户目录。
+也可安装一个 `*.zhse.json.gz` 全量包。安装不改变当前 generation；同名不同内容默认汇总确认一次，
+显式指定
+.B --overwrite
+时跳过覆盖确认。
+.TP
+.B zh safety help|-h|--help
+显示 Safety 规则管理命令的专用用法。
+.TP
+.B zh codec ls
+列出当前 generation 中已加载的 Codec。表格字段为 FORMAT、PUBLISHER、SOURCE、ACTIVE、
+SCHEMA_PROFILE 和 SIGNER。PUBLISHER 区分 official/trusted，SOURCE 区分 bundled、
+system-package 和 user-installed；current/stale 作为 catalog 全局状态只在表格后显示一次。
+表格按 Unicode 显示宽度对齐，不使用制表符。
+.TP
+.B zh codec -t \fIFILE.zhcodec\fR
+无副作用地验证 Codec 信封、Ed25519 签名、签名 payload 身份、schema、AST、请求策略和当前
+发布者信任状态，并显示 external-file 来源及与当前 zhsh 的兼容性。外部文件名可以不同于
+FORMAT，但必须以 .zhcodec 结尾。
+.TP
+.B zh codec install \fIFILE.zhcodec\fR
+安装一个自包含的签名单文件 Codec。未知第三方发布者会在任何写入前显示完整公钥指纹、制品摘要
+和授权范围，并使用默认否的确认；官方签名 Codec 使用内置官方信任锚，不重复确认。成功后按签名
+FORMAT 规范化文件名、提交磁盘 revision 并立即发布新 generation，不自动修改活动 LLM 配置。
+若 system scope 已经提供相同 FORMAT 和 SHA-256，则作为幂等成功返回，继续使用现有制品，不向
+用户目录写入副本，也不更新 revision 或 generation。同 FORMAT 不同内容仍然拒绝。
+.TP
+.B zh codec uninstall IFORMATR
+删除当前用户安装的精确 FORMAT。bundled 和 system-package Codec 必须由拥有文件的 apt、dnf
+等包管理器卸载。活动配置正在使用目标时会进行一次 30 秒、默认否的确认；成功后配置文件和
+Publisher Trust Anchor 均保留，当前进程立即发布新 generation。
+.TP
+.B zh codec export [\fIFORMAT\fR] [-o|--output-dir \fIDIR\fR]
+逐字节导出当前 generation 中已验证的用户 Codec；省略 FORMAT 时使用活动 Codec。官方 Codec
+和过期 generation 不可导出，目标同名不同内容不会被覆盖。
+.TP
+.B zh codec reload
+重新扫描固定 Codec 与信任目录，把手工变化纳入新的 revision 和 generation。
+.TP
+.B zh codec help|-h|--help
+显示 Codec 生命周期命令的用途、用法、状态变化和术语解释。
+使用
+.BR "zh codec ls -h" 、
+.BR "zh codec -t -h" 、
+.BR "zh codec install -h" 、
+.BR "zh codec uninstall -h" 、
+.BR "zh codec export -h"
+或
+.B zh codec reload -h
+查看叶级帮助。
+.TP
+.B zh help
+显示 zh 管理命令帮助。
+.SH LLM 配置向导
+.B zh llm
+只进入创建流程；已有同名配置会被拒绝并提示使用
+.BR "zh llm \-m 配置名" 。
+.B zh llm 配置名
+跳过新名称输入。
+.B zh llm \-m
+从已有配置列表中选择要修改的配置，默认选中当前活动配置。
+配置以 NAME、FORMAT、JSON_SCHEMA、URL、ACCESS_TOKEN、FLASH、STANDARD、MAX、TIER
+九行表单显示。
+.PP
+URL 可以在 scheme、host 和可选 port 后包含路径前缀，但不能包含凭据、
+query 或 fragment。HTTPS 接受合法域名或 IP；HTTP 只接受 localhost、回环地址、
+RFC 1918 IPv4 或 IPv6 ULA 字面量，且不会通过 DNS 判断普通域名是否位于内网。
+私网 HTTP 绕过环境代理并在启用、启动恢复和状态中标明明文风险。
+Core 去掉 Base URL 末尾斜杠后
+追加 Codec 请求路径。例如 https://api.deepseek.com/anthropic 与 Anthropic Codec 的
+/v1/messages 组成 https://api.deepseek.com/anthropic/v1/messages。
+向导不会查询 DNS 或测试连通性。
+.PP
+新配置的 standard 默认沿用最终 flash 值，\:max 默认沿用最终 standard 值。
+修改配置时三个档位分别保留自身旧值，\:不会隐式级联。
+损坏配置只有在明确选择覆盖重建后才会被替换。
+.PP
+access-token 明文不会回显；表单以等字符数掩码显示当前值。新建时允许留空；修改时保留原值，
+在该字段按 Ctrl+U 可显式清空。
+长度不足 16 个字符时状态显示为五个星号；
+否则显示首四位、五个星号和尾四位。
+.PP
+表单初始处于 INSERT；输入只修改当前 value，Enter 进入下一字段，Tab 补全 FORMAT、
+JSON_SCHEMA 或 TIER。选择字段会在表单底部显示随当前值实时过滤的 Options；Tab 补到唯一值或
+公共前缀，Enter 只接受精确选项或唯一前缀。按 Esc 进入 NORMAL；方向键在字段之间或 KEY=VALUE 行内移动，
+按 i 恢复输入。NORMAL 光标位于 key 或等号时，i 从 value 末尾开始编辑；位于 value 时从
+对应位置编辑。命令行已指定 NAME 或修改已有配置时，NAME 固定且不能重命名。
+.PP
+当前 INSERT、NORMAL 或 COMMAND 状态及可用按键显示在表单首行；不会额外显示模式状态行。
+长字段使用单行水平视口，避免终端自动换行造成光标错位。
+.PP
+NORMAL 中按冒号进入 COMMAND。输入 q 回车即 :q，不保存退出；输入 wq 回车即 :wq，
+在任意编辑阶段保存当前草稿后退出，不会隐式启用。COMMAND 中尚未回车时按 Esc 会丢弃命令并
+返回 NORMAL。直接在 INSERT 字段中输入 :q 或 :wq 不具有控制语义。
+Ctrl+C、Ctrl+D 或输入流结束也会取消向导。
+向导不设置无操作超时，可以在查找 URL、access-token 或模型名后继续填写。
+.PP
+只要 NAME 有效，:wq 可以保存缺少 URL、FORMAT 或模型名的草稿。该操作返回成功并列出缺项，
+但不完整草稿不能启动 Agent、求值 Codec 或发起 HTTP 请求。完整性不写入文件；每次加载都会按
+当前文件和 Codec 重新判断。
+.PP
+保存前会显示字符框摘要。
+最终操作包括“保存”“保存并启用”和“取消”；
+选择取消时需要二次确认。
+.PP
+.B zh use 配置名
+遇到不完整配置时显示缺项并询问是否修复。选择修复会打开同一表单；选择暂不修复仍会把它设为
+活动配置，但 Agent 不可用，普通 Shell 命令不受影响。修复或选择操作被取消时保留原活动配置。
+.SH LLM 配置
+配置保存在：
+.PP
+.I ~/.zhsh/llm/配置名.llm
+.PP
+采用 UTF-8、一行一个 KEY=VALUE，字段为：
+.PP
+.EX
+NAME
+URL
+FORMAT
+JSON_SCHEMA
+ACCESS_TOKEN
+FLASH
+STANDARD
+MAX
+TIER
+.EE
+.PP
+FORMAT 精确选择 id@SemVer；官方为 openai@版本或 anthropic@版本，第三方为
+用户选择的安全标识@版本，\:建议使用反向域名避免冲突。\:Codec 生成单斜杠相对 endpoint 和
+协议正文；\:Core 去除 Base URL 尾斜杠后追加 endpoint，\:复核 Origin，\:并在计划校验后向
+Header、Query 或 Body SecretSlot 注入密钥再发送 POST。
+JSON_SCHEMA 只接受 off 或 on，缺失按 off 读取。\:on 选择 Codec 的 json_schema Encode
+Profile；用户 Codec 未声明可验证的该 Profile 时保留 on、实际使用 default，并在配置、切换
+或启动结束时提示。\:已声明但损坏的 Profile 不会降级，整个 Codec 会被拒绝。
+ACCESS_TOKEN 可以缺失或为空；SecretSlot 仍按原结构物化空字符串，是否需要密钥以及
+密钥是否有效由 LLM 供应商响应决定。
+声明式插件不能读取密钥、环境、文件或网络，也不能执行代码。
+.PP
+第三方 Codec 是一个内嵌发布公钥和签名的自包含 .zhcodec 文件，通过
+.B zh codec install FILE.zhcodec
+安装为
+.IR ~/.zhsh/plugins/llm/插件ID@版本.zhcodec 。
+首次安装未知发布者时，zhsh 显示完整指纹并要求用户明确确认；批准后发布公钥成为
+.IR ~/.zhsh/plugins/llm/trusted-keys/完整指纹.pub
+中的 Publisher Trust Anchor。
+受管目录内文件名与包身份不符、签名无效、签名者未授权、符号链接、schema 不兼容、
+所有者不匹配或 group/other 可写的制品会被拒绝。
+.PP
+官方身份只由 zhsh 内嵌官方发布公钥的有效签名确定，不由文件目录或下载地址确定。随当前 zhsh
+软件包交付的 bundled Codec 还必须与编译时锁定的长度和 SHA-256 完全一致；该锁不限制后续官方
+FORMAT。未随包的官方 Codec 可以由用户安装，或由独立系统软件包交付，但仍须通过当前宿主的
+payload、AST、HTTP 和 Origin 兼容性校验。zhsh 二进制不嵌入参考 .zhcodec。用户 Codec
+只接受签名、schema、AST、HTTP 合法性和资源上限校验；temperature、thinking 或内部字段是
+用户 Body AST 中的普通内容，其协议语义由用户负责。
+.PP
+使用
+.B zh codec uninstall FORMAT
+只删除
+.IR ~/.zhsh/plugins/llm/FORMAT.zhcodec
+中的 user-installed 制品，不删除系统软件包文件，也不撤销该发布公钥的 Publisher Trust Anchor。
+活动配置文件不会被改写；若删除其精确 FORMAT，Agent 进入明确不可用状态，重新安装相同制品或
+选择其他 FORMAT 后可恢复。
+.PP
+当前配置名保存在
+.IR ~/.zhsh/active-llm ，
+启动时自动恢复。
+.PP
+Unix 上配置目录权限为 0700，配置文件和活动标记权限为 0600。
+.SH 自然语言任务
+前五轮每轮最多执行一条模型请求的命令，
+也可以提前返回答案。
+每个执行阶段的第六轮禁止执行新命令，只能返回最终答案或结构化澄清。
+.PP
+第六轮仍返回命令或空答案时，zhsh 拒绝该命令，
+并报告模型未能在严格六轮内生成最终答案。
+格式纠正请求同样占用一轮；\:第六轮结束后不会在同一阶段发起格式修复。
+第一次创建 Agent 任务时，zhsh 会在首条消息中加入最小宿主上下文：发行版、内核、架构、
+root/user、内核可见总内存、zhsh 版本、当前目录和有效 Locale。进程级事实在同一 zhsh
+进程内只采集一次；完整环境、PATH、HOME、历史、alias、函数、PS、LLM 凭据和插件目录不会
+作为该上下文发送。该上下文只帮助选择命令，不是当前任务执行证据。
+对当前系统状态和软件安装情况等观测任务，zhsh 只接受在本任务中获得真实命令输出证据后的
+最终答复。Safety 等级只决定执行前的自动放行、确认或拒绝；命令退出只形成执行完成事实，
+只有 zhsh 实际观测并反馈给模型的完整或已标记截断输出才能形成内容证据。完整空输出与
+输出不可取得是不同状态，且证据不会因后续命令的副作用分类被清除。
+前五轮出现无证据答复时会在六轮预算内要求模型修复；第六轮仍无证据时以“未完成”关闭，
+不展示模型生成的未验证结论。
+澄清回答会保留当前任务历史并启动新的六轮阶段；\:首次澄清保持高触发门槛，
+回答后仍有阻塞性歧义时，\:后续澄清比首次更容易触发。\:每个任务最多澄清三次。
+每道问题同时显示候选项和自由文本输入；\:选择与输入作为并列状态一并保留。
+模型澄清界面 30 秒无输入、Ctrl-C 或 Ctrl-D 会取消当前任务；手动澄清超时或提交空白内容
+则无损恢复原操作，不消耗澄清额度。
+.PP
+Agent 不能执行读取历史、退出 Shell、修改会话或修改 LLM 状态的
+内建操作；此类请求在确认前直接拒绝。
+模型响应必须是单个字段合法的顶层 JSON 对象；\:普通文本、Markdown、畸形 run、未知动作和
+把对象再次编码成 JSON 字符串的响应不会作为 Shell 命令执行，\:只能在剩余主轮次内修复格式。
+每个合法 run 都会先形成包含当前目录、PATH、参数和实际执行目标的冻结计划，并在当前任务的
+只追加操作日志中取得宿主操作编号。同一冻结计划在一个任务中最多进入一次执行尝试；\:格式修复
+或澄清后再次返回相同操作时，zhsh 会在 Safety 和确认前拒绝重放，不再弹出确认，也不会重复
+打印旧输出。终端会说明既有操作是未启动、已完成、未正常完成还是可能已经启动。
+.PP
+操作日志只存在于当前自然语言任务的内存中，任务结束后销毁，不写入历史，也不跨任务阻止用户
+再次执行。它只防止相同冻结计划在六轮编排中被模型无意重放，不证明不同 Bash 文本语义等价，
+也不提供事务、回滚或跨重启 exactly-once 保证。
+每条 run 必须包含简短的内部步骤标签和实际命令；\:步骤标签只保留在任务上下文，\:不显示、
+不参与执行或授权。\:顶层事件从第一列开始：\:> 表示 Agent 提出的命令，\:? 只表示当前正在
+等待输入，\:! 表示风险、取消、未完成或失败，\:· 表示已完成的非正文决策。临时确认和澄清
+控件在输入结束后会被清除并折叠为稳定结果。正常答案之后以浅灰色显示 N轮 T.s；发生过澄清时显示
+N轮 澄清 C次 T.s。模型命令会先完整显示并由宿主形成统一安全评估。可完整绑定的 pipeline、
+&&、||、sequence、重定向和受控 glob 形成静态计划，批准后不再由 Bash 重解释。环境变量
+.B ZHSH_AGENT_TRUST
+可设置为 balanced（默认）、confirm 或 trusted。balanced 只自动执行目标身份可信、预期只读、
+披露范围受限的静态命令；\:confirm 确认全部可执行命令；\:trusted 只额外自动执行 Linux 核心
+规则确认的任务根内普通修改，\:不能绕过未知、应用级修改、明确破坏、提权、身份不明、
+敏感或无界披露
+以及网络外传确认。需要确认时提示包含 [y/N] 和 30 秒无输入取消期限；批准后清除风险与输入行，
+以普通前景色保留“已确认”。用户拒绝或确认超时以“已取消”结束，非交互 stdin 无法确认时以
+“未完成”结束。每个非完成终态都会追加“未执行命令”“已执行只读命令”“已执行修改状态的
+命令”或“已执行效果未知的命令”。预算、协议或
+环境限制也使用“未完成”；Provider、Codec、执行器、终端或内部状态的技术故障才使用“失败”。
+.PP
+等待 LLM 响应时，TTY 使用两行浅灰状态：第一行只显示“分析中”动画，第二行显示阶段、
+本阶段轮次、累计轮次和澄清次数。该状态不可输入，因此隐藏光标；进入确认或澄清输入、输出
+稳定事件或恢复主提示符前会完整清除两行并恢复光标。非 TTY 不输出动画或 ANSI 控制序列。
+.PP
+模型最终答案直接显示为纯文本。存在明确判断时先给出结论；系统状态、软件版本和资源观测
+使用“名称: 值”一项一行，避免把独立指标平铺成长行，也不重复已经展示的命令或完整原始
+输出。执行或变更结果同时包含状态、计数、未处理对象、原因和附加提示时，按语义分组；分组名称
+独占一行，语义块之间空一行。字段使用 ASCII 冒号加一个空格且行末不加句号；较长的软件包、
+文件或进程列表逐项换行，不以逗号压成长行。该排版建议不参与 Safety 或执行证据判断，偏差
+不会触发额外修复轮。JSON/Codec 解码
+完成后，展示层不会再次解释字面量反斜杠序列，只清理终端控制字符并保留真实换行。
+.PP
+变量缺失、空值或无效时使用 balanced；也可通过
+.B zh trust
+查询和修改，只有添加
+.B \-w
+才写入启动文件。
+分类不是安全证明、完整 Bash parser、系统级沙箱或自动回滚；\:命令仍以当前用户权限在真实宿主环境执行。
+zhsh 发行包不包含应用级 *.zhse.json，也不创建系统级 Safety 目录；本地规则安装在
+.IR ~/.zhsh/plugins/safety/ 。
+常规安装使用
+.BR "zh safety install FILE.zhse.json" ；
+需要更新同名规则时显式添加
+.BR --overwrite 。
+每个 JSON 文件同时声明负责的命令 basename、参数匹配和评估，不需要可执行文件或第二个路由
+清单。zhsh 严格校验 schema 并在进程内解释规则，不执行插件代码。除内置 Linux Core 外，全部
+规则均为 local；独立推荐仓库不提供安全性、正确性或覆盖完整性保证。本地文件按 mtime 升序、
+相同 mtime 按文件名字典序升序加载；同一命令采用最后一条显式匹配，完全没有显式匹配时才使用
+最后声明者的 default。local 可以接管 Linux Core 程序语义，但不能降低宿主持有的真实目标身份、
+Shell 结构、重定向、路径、披露或监督信号。任一无效 JSON 使整个 local 集合拒绝加载。规则在
+启动时加载一次；磁盘修改只有在
+.B zh safety reload
+成功后才影响新 Agent 任务。每个已开始的任务继续使用创建时的不可变规则快照。
+.B zh safety -t
+只校验候选，不改变当前规则。分类规则由发行者或安装者负责，不构成严格安全证明。
+用户直接输入的命令不经过 Agent 确认。
+.PP
+Agent 命令没有固定运行时限。
+可识别的后台或脱离执行语法会在启动前拒绝；命令退出后，仍在原进程组中的后代会被有界
+终止和清理，无法确认清理完成时报告失败。主动逃离原进程组的恶意进程不在当前 prototype
+完整保证范围内。
+捕获模式下，stdout 与 stderr 合计超过 1 MiB 时会终止进程组；每条命令最多向模型反馈
+64 KiB，一次任务最多反馈 256 KiB。
+需要认证但产生有限行式结果的
+.BR sudo 、 "su -c" 、 "ssh host command"
+等命令会切换到真实前台终端；密码和键盘输入由目标程序直接读取，stdout/stderr 实时显示并以
+有界、脱敏副本反馈模型。
+.BR vim 、 top 、 "ssh host"
+等全屏或持续会话直接继承完整终端，只反馈退出状态和输出不可取得标记。
+交互命令沿用启动 zhsh 的控制终端，因此系统 sudoers 的短期认证状态照常生效；zhsh 不保存
+密码。SSH 只绑定本机启动器，远端命令不继承本机 PATH 或 Safety 结论；进入远端 Shell 后的
+输入不经过 zhsh 路由。用户直接输入的命令继承终端，不应用这些捕获限制。
+.SH 补全和历史
+Tab 补全支持 PATH 可执行命令、内建命令、别名、Shell 函数、
+外部命令的文件路径参数、zh 子命令、配置名和模型档位。
+命令候选自动追加空格；路径中的空白和 Shell 特殊字符会自动转义，
+目录候选追加 /。补全识别反斜杠、单引号、双引号及控制运算符后的命令位置。
+.PP
+历史保存在
+.IR ~/.zh_history ，
+最多 10000 条。
+以空格开头的输入不保存。
+.PP
+LLM 响应、模型命令、命令输出、启动文件和配置向导字段
+不会进入历史，也不会自动成为后续 LLM 上下文。
+.SH 提示符
+zhsh 支持 Bash 的 PS0 到 PS4 会话变量。
+PS1 生成主提示符；PS2 在 Bash 输入尚未完成时生成续行提示符；
+PS0 在完整命令读取后、执行前显示。PS3 和 PS4 随会话状态传入实际 Bash，
+分别供 select 和 xtrace 使用。
+.PP
+默认 PS1 采用紧凑的 Bash 风格：
+.PP
+.EX
+PS1='\\[\\e[38;5;124m\\]｢zh｣\\[\\e[0m\\]\\[\\e[38;5;36m\\]\\u@\\h\\[\\e[0m\\]:\\[\\e[36m\\]\\w\\[\\e[0m\\]\\$ '
+.EE
+.PP
+用户可在当前会话直接赋值覆盖，例如：
+.PP
+.EX
+PS1='\\u@\\h:\\W\\$ '
+PS2='continue> '
+PS4='+ \\s:\\#> '
+.EE
+.PP
+PS 变量也可由 export、export -n、unset 和 source 修改。
+持久配置应写入 ~/.zhshrc。提示符支持 Bash 常用身份、主机、cwd、时间、历史号、
+命令号、版本、终端、退出状态、PID、环境变量和 ANSI 反斜杠转义。
+.PP
+提示符渲染不会执行命令替换、反引号或算术展开，这些表达式保持字面文本，
+避免每次刷新提示符时产生隐式外部副作用。需要完整 Bash 赋值展开时，
+应通过 ~/.zhshrc 和 source 导入最终字符串值。
+.SH 文件
+.TP
+.I ~/.zhshrc
+启动时使用 Bash 执行并同步可持续会话状态。
+.TP
+.I ~/.zh_history
+用户主提示符历史。
+.TP
+.I ~/.zhsh/llm/*.llm
+LLM 后端配置。
+.TP
+.I ~/.zhsh/active-llm
+启动时自动恢复的配置名。
+.PP
+HOME 在启动时只解析一次，必须是非空、UTF-8 的绝对路径。缺失、空、相对或非 UTF-8 HOME
+会禁用上述用户状态以及用户 Codec/安全规则，不读取 cwd 中的同名候选文件；普通 Shell 命令
+仍可执行。会话中随后修改 HOME 不会迁移用户状态根。
+.PP
+运行时会逐项隔离损坏、冲突或权限不安全的 Codec。无关坏制品不阻止普通 Shell；当前配置
+所需 Codec 不可用时只禁用 Agent，并在启动时集中报告一次诊断。
+.SH 信号和退出
+Ctrl+C 中断当前输入、普通前台命令、Agent 命令或异步 LLM 请求，
+但不退出 zhsh。
+取消优先于同时到达的 LLM 结果，迟到响应不会进入后续任务。
+取消不能回滚已经完成的命令副作用，也不能撤回供应商已收到的请求或计费。
+.PP
+提示符处以及 LLM 请求或 Agent 捕获执行期间的 Ctrl+Z/Pause 不会暂停 zhsh。
+用户整行前台命令被 Ctrl+Z 暂停后，zhsh 收回终端；运行无参数
+.B fg
+可恢复最近一条暂停命令。Agent 前台命令被暂停时会被有界终止并归还终端。
+.PP
+Ctrl+D、
+.B exit
+或
+.B exit N
+退出。
+管道模式遇到有效 exit 后不再处理剩余输入。
+.SH 限制
+zhsh 不实现完整 Shell parser。
+交给一次性 Bash 的复合命令不会把其中的 cd、export、unset、
+alias 或 zh 状态变化同步回当前会话。
+.PP
+zhsh 不实现完整 job control。
+.B fg
+只是单槽位的整行命令恢复能力；没有 jobs、bg、作业编号、wait 或 disown，也不单独管理
+一行 Bash 命令内部创建的多个后台作业。状态型 source 被暂停时终止且不提交会话快照。
+.PP
+已识别的密码输入和终端程序使用前台模式；
+.br
+有限行式输出实时显示并有界发送给模型；完整 TUI 和持续会话的屏幕内容不会发送给模型。
+.PP
+Agent 应避免 less、watch、tail -f 等持续交互程序，并限制大文件、日志和目录输出。
+非 ASCII 首字符输入会进入 Agent，并可能发送给当前 LLM 后端；ASCII 首字符后的 Unicode
+参数不会仅因包含 Unicode 而发送给 LLM。
+当前 Provider 会收到 Agent 输入、系统 Prompt、最小宿主上下文、任务 transcript 和有界命令反馈。Agent 以当前
+UID 在真实宿主运行，prototype 没有文件、环境或网络系统级沙箱。已知 LLM token 会在反馈进入
+transcript 前精确脱敏，但编码或变换后的秘密无法保证识别；不要授权 Agent 读取不应外传的
+凭证或秘密。
+.SH 支持范围
+官方 prototype 二进制包支持 Ubuntu 24.04 LTS amd64 DEB 和 Fedora 44 x86_64 RPM，要求
+glibc 2.39 或更新版本及 Bash 5.2。其他 Linux 发行版、ARM64 和 macOS 尚未验证。源码构建
+和正式发布统一使用 Rust 1.98.0 工具链。
+.SH 参见
+.BR bash (1)

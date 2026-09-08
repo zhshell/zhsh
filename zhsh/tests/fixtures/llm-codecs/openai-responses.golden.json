@@ -1,0 +1,48 @@
+{
+  "request": {
+    "system": "system",
+    "messages": [{"role": "user", "content": "hello"}],
+    "model": "model",
+    "max_output_tokens": 32
+  },
+  "expected_request": {
+    "relative_path": "/v1/responses",
+    "json_body": {
+      "input": [{"role": "user", "content": "hello"}],
+      "instructions": "system",
+      "max_output_tokens": 32,
+      "model": "model",
+      "reasoning": {"effort": "none"},
+      "store": false,
+      "text": {"format": {"type": "json_object"}}
+    }
+  },
+  "success_response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "status": "completed",
+      "output": [
+        {"type": "reasoning", "summary": []},
+        {
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {"type": "output_text", "text": "{\"response\":{\"action\":\"done\",\"answer\":\"done\"}}"}
+          ]
+        }
+      ],
+      "usage": {"input_tokens": 10, "output_tokens": 8}
+    }
+  },
+  "expected_success": {
+    "text": "{\"response\":{\"action\":\"done\",\"answer\":\"done\"}}",
+    "finish_reason": "completed"
+  },
+  "error_response": {
+    "status": 429,
+    "headers": {"retry-after": "2"},
+    "body": {"error": {"message": "slow down", "type": "rate_limit_error"}}
+  },
+  "expected_error": {"kind": "rate_limited", "retry_after_ms": 2000}
+}

@@ -1,0 +1,75 @@
+[package]
+name = "zhsh"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "支持中文自然语言命令的 AI 增强 Shell"
+license-file = "../LICENSE"
+publish = false
+readme = "../README.md"
+repository.workspace = true
+homepage = "https://github.com/zhshell/zhsh"
+keywords = ["shell", "cli", "llm", "terminal", "chinese"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "zhsh"
+path = "src/main.rs"
+
+[dependencies]
+rustyline = "18.0.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "http2", "system-proxy", "rustls-no-provider"] }
+rustls = { version = "0.23.43", default-features = false, features = ["std", "ring"] }
+tokio = { version = "1.52.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ctrlc = "3"
+url = "2"
+unicode-width = "0.2"
+libc = "0.2"
+semver = { version = "1", features = ["serde"] }
+sha2 = "0.10"
+ring = "0.17"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[build-dependencies]
+ring = "0.17"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[package.metadata.deb]
+maintainer = "jungle <junglelk@foxmail.com>"
+copyright = "2026, zhsh contributors"
+license-file = ["../LICENSE", "0"]
+section = "utils"
+priority = "optional"
+revision = "1"
+depends = "bash, ca-certificates, $auto"
+extended-description = "zhsh 是一个支持中文自然语言交互的 AI 增强 Shell。ASCII 输入直接交给 Shell，非 ASCII 输入由当前 LLM 后端处理；用户可持久化选择 LLM 后端和模型等级。"
+assets = [
+    ["target/release/zhsh", "usr/bin/zhsh", "755"],
+    ["assets/llm-codecs/openai@0.3.0.zhcodec", "usr/lib/zhsh/plugins/llm/", "644"],
+    ["assets/llm-codecs/anthropic@0.3.0.zhcodec", "usr/lib/zhsh/plugins/llm/", "644"],
+    ["../packaging/man/zhsh.1", "usr/share/man/man1/zhsh.1", "644"],
+    ["../README.md", "usr/share/doc/zhsh/README.md", "644"],
+    ["../LICENSE", "usr/share/doc/zhsh/LICENSE", "644"],
+]
+
+[package.metadata.generate-rpm]
+release = "1"
+license = "GPL-3.0-or-later"
+summary = "支持中文自然语言交互的 AI 增强 Shell"
+assets = [
+    { source = "target/release/zhsh", dest = "/usr/bin/zhsh", mode = "0755" },
+    { source = "zhsh/assets/llm-codecs/openai@0.3.0.zhcodec", dest = "/usr/lib/zhsh/plugins/llm/openai@0.3.0.zhcodec", mode = "0644" },
+    { source = "zhsh/assets/llm-codecs/anthropic@0.3.0.zhcodec", dest = "/usr/lib/zhsh/plugins/llm/anthropic@0.3.0.zhcodec", mode = "0644" },
+    { source = "packaging/man/zhsh.1", dest = "/usr/share/man/man1/zhsh.1", mode = "0644", doc = true },
+    { source = "README.md", dest = "/usr/share/doc/zhsh/README.md", mode = "0644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/zhsh/LICENSE", mode = "0644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+bash = ">= 5.2"
+ca-certificates = "*"
