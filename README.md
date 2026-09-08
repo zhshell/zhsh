@@ -1,7 +1,6 @@
 # zhsh
 
-zhsh 是面向中文用户的 AI 增强交互式 Shell。它保留 Bash 的命令、管道、重定向和脚本能力，
-同时允许直接使用中文及其他非 ASCII 文本描述需要完成的任务。
+zhsh 是面向中文用户的 AI 增强交互式无状态的 Shell。它保留 Bash 的命令、管道、重定向和脚本能力，同时允许直接使用中文及其他非 ASCII 文本描述需要完成的任务。
 
 ```text
 ｢zh｣user@server:~$ 检查当前系统负荷
@@ -14,8 +13,7 @@ zhsh 是面向中文用户的 AI 增强交互式 Shell。它保留 Bash 的命�
 2轮 3.1s
 ```
 
-当前版本是面向 Homelab 和个人 Linux 环境的 prototype，不建议在保存生产凭据、关键业务状态
-或高价值数据的主机上使用。
+当前版本是面向 Homelab 和个人 Linux 环境的 prototype，不建议在保存生产凭据、关键业务状态或高价值数据的主机上使用。
 
 ## 主要能力
 
@@ -62,8 +60,7 @@ sudo make install
 ```
 
 `make install` 会安装主程序、两个锁定的官方 Codec、README、LICENSE 和 `zhsh(1)` 手册。
-应用级 Safety 规则需要用户另行安装。当前不支持使用 `cargo install` 完成完整安装，因为它不会
-部署运行时资源。
+应用级 Safety 规则需要用户另行安装。当前不支持使用 `cargo install` 完成完整安装，因为它不会部署运行时资源。
 
 启动和版本查询：
 
@@ -86,8 +83,7 @@ check disk usage          → Shell
 Проверить систему         → Agent
 ```
 
-路由器不会分析意图、查询 PATH、补空格或规范化 Unicode。英文自然语言以 ASCII 开头，因此也会
-进入 Shell。非 ASCII 命令名可使用 `./工具` 或 `command 工具` 显式交给 Shell。
+路由器不会分析意图、查询 PATH、补空格或规范化 Unicode。英文自然语言以 ASCII 开头，因此也会进入 Shell。非 ASCII 命令名可使用 `./工具` 或 `command 工具` 显式交给 Shell。
 
 ## 配置 LLM
 
@@ -100,8 +96,7 @@ zh llm -m
 zh llm -m local-qwen
 ```
 
-配置向导没有业务超时。在表单中按 Esc 进入 Normal 状态，方向键移动，`i` 恢复输入；输入
-`:q` 放弃，输入 `:wq` 可在任意阶段保存当前草稿。不完整配置可以保存，但在修复前 Agent
+配置向导没有业务超时。在表单中按 Esc 进入 Normal 状态，方向键移动，`i` 恢复输入；输入`:q` 放弃，输入 `:wq` 可在任意阶段保存当前草稿。不完整配置可以保存，但在修复前 Agent 
 保持不可用，普通 Shell 不受影响。
 
 配置保存在 `~/.zhsh/llm/<名称>.llm`，活动名称保存在 `~/.zhsh/active-llm`：
@@ -127,10 +122,8 @@ TIER=flash
 - `FLASH`、`STANDARD`、`MAX`：三个档位的模型名；
 - `TIER`：当前档位。
 
-公网和域名形式的 Base URL 必须使用 HTTPS。HTTP 只允许字面 localhost、loopback 和明确的
-私有 IP 地址；私网 HTTP 会显示明文传输警告，带非空 token 时会额外提示凭据风险。URL 不能
-包含用户信息、查询参数或 fragment。zhsh 会将 Codec endpoint 追加到 Base URL，并拒绝任何
-Origin 变化。
+公网和域名形式的 Base URL 必须使用 HTTPS。HTTP 只允许字面 localhost、loopback 和明确的私有 IP 地址；私网 HTTP 会显示明文传输警告，带非空 token 时会额外提示凭据风险。
+URL 不能包含用户信息、查询参数或 fragment。zhsh 会将 Codec endpoint 追加到 Base URL，并拒绝任何 Origin 变化。
 
 常用管理命令：
 
@@ -150,8 +143,7 @@ zhsh 主仓库只锁定、校验并分发两个官方 Codec 制品：
 - `openai@0.3.0`：OpenAI Responses API；
 - `anthropic@0.3.0`：Anthropic Messages API。
 
-每个制品同时包含默认 JSON 输出和可选 JSON Schema Profile，由 LLM 配置中的
-`JSON_SCHEMA=off|on` 选择。Codec 是经过签名和大小、复杂度限制的声明数据，不读取文件、环境
+每个制品同时包含默认 JSON 输出和可选 JSON Schema Profile，由 LLM 配置中的 `JSON_SCHEMA=off|on` 选择。Codec 是经过签名和大小、复杂度限制的声明数据，不读取文件、环境
 或网络，也不执行本地代码。
 
 ```bash
@@ -163,8 +155,7 @@ zh codec export example.provider@1.0.0 -o ./dist
 zh codec reload
 ```
 
-首次安装第三方发布者的 Codec 时，zhsh 会显示完整公钥指纹并要求明确确认。外部文件名不决定
-Codec 身份，安装位置由已验签 payload 中的 FORMAT 规范化。官方 Codec 不能导出。
+首次安装第三方发布者的 Codec 时，zhsh 会显示完整公钥指纹并要求明确确认。外部文件名不决定 Codec 身份，安装位置由已验签 payload 中的 FORMAT 规范化。官方 Codec 不能导出。
 
 Codec 相关独立仓库：
 
@@ -174,9 +165,7 @@ Codec 相关独立仓库：
 
 ## Agent 命令与 Safety
 
-默认 `balanced` 策略只自动执行目标身份可信、静态、有限且披露受限的只读计划。写入、删除、
-覆盖、提权、身份不明、敏感披露和宿主无法验证的计划需要用户确认或直接拒绝。Safety 分类是
-启发式风险判断，不是命令安全证明，也不是沙箱。
+默认 `balanced` 策略只自动执行目标身份可信、静态、有限且披露受限的只读计划。写入、删除、覆盖、提权、身份不明、敏感披露和宿主无法验证的计划需要用户确认或直接拒绝。Safety 分类是启发式风险判断，不是命令安全证明，也不是沙箱。
 
 ```bash
 zh trust balanced
@@ -185,8 +174,7 @@ zh trust trusted
 zh trust -w balanced
 ```
 
-zhsh 只内置 Linux 核心命令的有限只读规则。Java、Git、Docker 等应用规则可从独立仓库选择，
-也可由用户自行编写；所有外部规则统一视为本地策略，推荐规则不保证绝对安全、正确或完整。
+zhsh 只内置 Linux 核心命令的有限只读规则。Java、Git、Docker 等应用规则可从独立仓库选择，也可由用户自行编写；所有外部规则统一视为本地策略，推荐规则不保证绝对安全、正确或完整。
 
 ```bash
 zh safety
@@ -209,18 +197,13 @@ Safety 推荐规则仓库：<https://github.com/zhshell/zhsh-safety>
 - 已知 access-token 会在反馈前精确脱敏，但不能保证识别编码、拆分或变换后的秘密；
 - 用户直接输入的 Shell 命令不经过 Agent Safety 策略。
 
-请为 LLM 使用独立、最小权限、限额且可快速轮换的凭据，不要让 Agent 读取 SSH 私钥、云凭据
-或与当前任务无关的个人数据。
+请为 LLM 使用独立、最小权限、限额且可快速轮换的凭据，不要让 Agent 读取 SSH 私钥、云凭据或与当前任务无关的个人数据。
 
 ## 终端与作业控制
 
-zhsh 当前不提供完整 job control。提示符处的 Ctrl-Z/Pause 不会暂停 zhsh；一条用户前台命令
-被 Ctrl-Z 暂停后，可以使用无参数 `fg` 恢复。当前没有 `jobs`、`bg`、作业编号、`wait` 或
-`disown`，也不单独管理一行 Bash 命令内部产生的多个后台作业。
+zhsh 当前不提供完整 job control。提示符处的 Ctrl-Z/Pause 不会暂停 zhsh；一条用户前台命令被 Ctrl-Z 暂停后，可以使用无参数 `fg` 恢复。当前没有 `jobs`、`bg`、作业编号、`wait` 或 `disown`，也不单独管理一行 Bash 命令内部产生的多个后台作业。
 
-`sudo`、`su -c` 和 `ssh host command` 等有限行式交互命令使用真实前台终端，同时捕获有界、
-脱敏副本供 Agent 总结。`vim`、`top`、`ssh host` 等全屏或持续会话只向 Agent 提供退出状态。
-进入远端交互式 SSH 后，输入不再经过 zhsh 路由、Safety 或历史。
+`sudo`、`su -c` 和 `ssh host command` 等有限行式交互命令使用真实前台终端，同时捕获有界、脱敏副本供 Agent 总结。`vim`、`top`、`ssh host` 等全屏或持续会话只向 Agent 提供退出状态。进入远端交互式 SSH 后，输入不再经过 zhsh 路由、Safety 或历史。
 
 ## 内建命令与提示符
 
@@ -240,9 +223,7 @@ PS1='\u@\h:\w\$ '
 zhsh --trace-agent
 ```
 
-该选项只为当前进程记录无法通过严格协议解析的 Agent 原始响应，输出到
-`~/.zhsh/diagnostics/invalid-agent-responses.jsonl`。内容可能包含用户任务和 Provider 响应，
-默认不启用，不应作为 issue 附件直接公开。
+该选项只为当前进程记录无法通过严格协议解析的 Agent 原始响应，输出到 `~/.zhsh/diagnostics/invalid-agent-responses.jsonl`。内容可能包含用户任务和 Provider 响应，默认不启用，不应作为 issue 附件直接公开。
 
 ## 开发与验证
 

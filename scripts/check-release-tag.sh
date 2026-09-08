@@ -66,7 +66,8 @@ scripts/check-release-metadata.sh "$WORK_DIR/deb-root/usr/bin/zhsh" "$DEB_FILE"
 ARCHIVE="target/release-artifacts/zhsh-${VERSION}.tar.gz"
 git archive --format=tar.gz --prefix="zhsh-${VERSION}/" \
     --output="$ARCHIVE" "$EXPECTED_TAG"
-cp CHANGELOG.md "target/release-artifacts/RELEASE_NOTES.md"
+python3 scripts/release_notes.py \
+    "$VERSION" "target/release-artifacts/RELEASE_NOTES.md"
 (
     cd target/release-artifacts
     sha256sum "$(basename "$DEB_FILE")" "$(basename "$RPM_FILE")" \
