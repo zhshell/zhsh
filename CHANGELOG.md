@@ -82,7 +82,7 @@
 
 - 提供 Ubuntu 24.04 LTS amd64 DEB、Fedora 44 x86_64 RPM 和源码安装方式，统一使用 `/usr`文件布局并安装主程序、官方 Codec、README、LICENSE 和中文 man page。
 - 官方二进制基线为 glibc 2.39 或更新版本及 Bash 5.2 或更新版本；源码构建固定使用 Rust 1.98.0。
-- DEB、RPM、源码归档和校验和由签名版本 Tag 的 GitHub Release 流程生成。
+- DEB、RPM、源码归档和校验和由版本 Tag 触发的 GitHub Release 流程生成。
 
 ### Prototype 边界
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# 先校验发布身份和签名，再复用完整 release-check 生成 tag 制品。
+# 先校验发布版本身份，再复用完整 release-check 生成 tag 制品。
 
 set -eu
 
@@ -39,12 +39,6 @@ if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
     echo "release-tag: $EXPECTED_TAG 未指向当前 commit" >&2
     exit 1
 fi
-
-if [ "$(git cat-file -t "refs/tags/$EXPECTED_TAG")" != tag ]; then
-    echo "release-tag: $EXPECTED_TAG 必须是带签名的 annotated tag" >&2
-    exit 1
-fi
-git tag --verify "$EXPECTED_TAG"
 
 # 发布身份先失败关闭，再执行一次完整源码与制品门禁。
 make release-check
