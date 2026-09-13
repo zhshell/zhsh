@@ -88,6 +88,71 @@ impl UnsupportedExecution {
 }
 
 impl AgentCommandPlan {
+    /// Native 内建计划不应用 Bash 过渡模式的只读内建白名单；执行仍须经过 Agent Safety/授权。
+    pub(super) fn from_native_builtin(
+        original: String,
+        name: String,
+        arguments: Vec<String>,
+        cwd: PathBuf,
+        path_snapshot: Option<OsString>,
+    ) -> Self {
+        Self {
+            original,
+            executable: AgentExecutionTarget::ZhshBuiltin {
+                name: name.clone(),
+                arguments,
+            },
+            cwd,
+            path_snapshot,
+            invocations: vec![ResolvedInvocation::named(
+                name,
+                CommandTargetKind::ZhshBuiltin,
+                ExecutableBinding::SystemTrusted,
+                None,
+            )],
+            dynamic_resolution: false,
+            unsupported_execution: None,
+        }
+    }
+
+    /// 授权视图只包装已准备的 Native 外部调用，不重新解释原文。
+    pub(super) fn from_native_external(prepared: super::native::PreparedNativeExternal) -> Self {
+        let arguments: Vec<String> = prepared
+            .arguments
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let mut words = vec![prepared.program.clone()];
+        words.extend(arguments.clone());
+        let mut invocations = vec![ResolvedInvocation::external(
+            prepared.program.clone(),
+            &prepared.target,
+        )];
+        if is_wrapper(&prepared.program) || has_nested_execution(&prepared.program, &arguments) {
+            // Native only binds the direct target. Existing Safety still analyzes argv, while
+            // downstream executable identities remain conservative (including script contents).
+            invocations.push(ResolvedInvocation::named(
+                prepared.program.clone(),
+                CommandTargetKind::DynamicOrUnresolved,
+                ExecutableBinding::Dynamic,
+                Some("外部程序的下游执行域未静态绑定".into()),
+            ));
+        }
+        Self {
+            original: prepared.original,
+            executable: AgentExecutionTarget::External {
+                path: prepared.target.resolved_path,
+                arguments: prepared.arguments,
+                identity: prepared.target.identity,
+            },
+            cwd: prepared.cwd,
+            path_snapshot: prepared.path_snapshot,
+            invocations,
+            dynamic_resolution: false,
+            unsupported_execution: unsupported_execution_in_words(&words, 0),
+        }
+    }
+
     pub(super) fn prepare(session: &SessionState, input: &str) -> Self {
         let original = input.trim().to_string();
         let path_snapshot = session.env.get("PATH").map(OsString::from);

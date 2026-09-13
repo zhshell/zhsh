@@ -69,7 +69,7 @@ fn sixth_run_is_rejected_without_a_seventh_request() {
 }
 
 #[test]
-fn native_run_finishes_after_one_request() {
+fn native_run_executes_then_obeys_six_round_limit() {
     run_request_limit(true);
 }
 
@@ -99,9 +99,13 @@ fn run_request_limit(native: bool) {
                     request_bodies.push(read_http_body(&mut stream));
                     reply(
                         &mut stream,
-                        r#"{"action":"run","purpose":"执行测试命令","command":"/usr/bin/true"}"#,
+                        if native {
+                            r#"{"action":"run","purpose":"执行测试命令","command":"true"}"#
+                        } else {
+                            r#"{"action":"run","purpose":"执行测试命令","command":"/usr/bin/true"}"#
+                        },
                     );
-                    if request_bodies.len() == if native { 1 } else { 6 } {
+                    if request_bodies.len() == 6 {
                         quiet_deadline = Some(Instant::now() + Duration::from_millis(300));
                     }
                 }
@@ -189,17 +193,16 @@ fn run_request_limit(native: bool) {
     let _ = fs::remove_dir_all(&home);
     let terminal = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(output.status.code(), Some(1));
     if native {
-        assert_eq!(requests.len(), 1, "{terminal}");
-        assert!(
-            terminal.contains("Native 空执行路径尚未执行命令"),
-            "{terminal}"
-        );
-        assert!(!terminal.contains("> /usr/bin/true"));
-        assert!(!terminal.contains("结果已反馈模型"));
+        assert_eq!(requests.len(), 6, "{terminal}");
+        assert!(terminal.contains("第6轮禁止执行新命令"), "{terminal}");
+        assert!(!terminal.contains("Native 空执行路径"));
+        // On untrusted/root hosts the existing non-TTY authorization may reject execution;
+        // confirmed execution is covered by the fake Completion tests.
+        assert!(requests[1].contains("result:"));
         return;
     }
+    assert_eq!(output.status.code(), Some(1));
 
     assert_eq!(
         requests.len(),

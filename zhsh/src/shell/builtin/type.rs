@@ -13,6 +13,23 @@ pub(crate) fn execute(
     args: &[String],
     builtin_names: &[&str],
 ) -> BuiltinResult {
+    execute_with_functions(shell, args, builtin_names, true)
+}
+
+pub(crate) fn execute_native(
+    shell: &mut SessionState,
+    args: &[String],
+    builtin_names: &[&str],
+) -> BuiltinResult {
+    execute_with_functions(shell, args, builtin_names, false)
+}
+
+fn execute_with_functions(
+    shell: &mut SessionState,
+    args: &[String],
+    builtin_names: &[&str],
+    include_functions: bool,
+) -> BuiltinResult {
     let mut all = false;
     let mut kind_only = false;
     let mut path_only = false;
@@ -59,7 +76,7 @@ pub(crate) fn execute(
                     continue;
                 }
             }
-            if shell.functions.contains_key(name) {
+            if include_functions && shell.functions.contains_key(name) {
                 found = true;
                 if kind_only {
                     output.push_str("function\n");

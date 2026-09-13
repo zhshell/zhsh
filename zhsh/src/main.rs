@@ -21,7 +21,7 @@ fn main() {
         }
         (Some(argument), None) if argument == "--help" || argument == "-h" => {
             println!(
-                "zhsh {}\n\n用法: zhsh [--help | --version | --trace-agent | --native]\n\n不带参数时启动交互式 Shell。\n--trace-agent  临时记录无法解析的 Agent 原始响应；日志可能包含任务内容。\n--native  ASCII 输入进入空处理旁路；模型 run 进入空路径后结束任务。使用 EOF 退出。",
+                "zhsh {}\n\n用法: zhsh [--help | --version | --trace-agent | --native]\n\n不带参数时启动交互式 Shell。\n--trace-agent  临时记录无法解析的 Agent 原始响应；日志可能包含任务内容。\n--native  用户与模型命令经 PATH 直接执行 ELF 二进制；支持现有内建与字面参数，不支持通用 Shell 展开。使用 exit 或 EOF 退出。",
                 env!("CARGO_PKG_VERSION")
             );
             0

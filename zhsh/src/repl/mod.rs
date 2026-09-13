@@ -385,8 +385,7 @@ fn process(
     };
 
     if native && routed.kind == input::InputKind::UserCommand {
-        shell::process_native(&routed.original);
-        return shell.last_exit;
+        return shell.run_native_with_history(&routed.original, history);
     }
 
     if routed.kind == input::InputKind::AgentInput {
@@ -422,6 +421,7 @@ fn process(
         }
         let t = Instant::now();
         let mut task = agent::Task::new_with_runtime(shell, &routed.original, agent, native);
+        task.set_native_history(history);
         let result = loop {
             match agent::run_phase(client, shell, &mut task) {
                 agent::PhaseResult::Finished(result) => break result,
@@ -578,7 +578,9 @@ fn process(
             },
         });
         let code = result.exit_code();
-        shell.last_exit = code;
+        if !native {
+            shell.last_exit = code;
+        }
         return code;
     }
 

@@ -75,6 +75,11 @@ fn is_command_introducer(word: &str) -> bool {
     matches!(word, "!" | "if" | "then" | "elif" | "else" | "do")
 }
 
+/// Native 已切分参数入口；不将字面操作符重新解释为 Shell 语法。
+pub(super) fn terminal_mode_words(words: &[String]) -> TerminalMode {
+    segment_mode(words)
+}
+
 fn segment_mode(words: &[String]) -> TerminalMode {
     let mut index = 0;
     while index < words.len()

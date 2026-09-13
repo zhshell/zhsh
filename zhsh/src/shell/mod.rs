@@ -34,7 +34,7 @@ pub(crate) use agent_plan::{
 pub(crate) use executor::{
     CapturedExecution, CommandTermination, OutputEvidence, AGENT_TASK_FEEDBACK_LIMIT,
 };
-pub(crate) use native::process as process_native;
+pub(crate) use native::{NativeExecutionError, NativeNotStartedReason};
 pub(crate) use safety_management::{
     SafetyAssessmentView, SafetyCatalogView, SafetyInstallEntryView, SafetyInstallOutcomeView,
     SafetyInstallPlan, SafetyInstallReport, SafetyInstallRequest, SafetyInstallStateView,
@@ -1330,8 +1330,11 @@ mod tests {
         assert_eq!(merged.exit_code, 0, "{}", merged.output);
         assert!(merged.output.contains("zhsh-definitely-missing"));
 
-        let output_path =
+        // BoundPath snapshots its parent; other tests must not mutate that directory.
+        let output_root =
             std::env::temp_dir().join(format!("zhsh-bound-output-{}", std::process::id()));
+        std::fs::create_dir_all(&output_root).unwrap();
+        let output_path = output_root.join("output");
         let _ = std::fs::remove_file(&output_path);
         let plan = shell.prepare_agent_command(&format!(
             "/usr/bin/printf written > '{}'",
@@ -1344,8 +1347,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&output_path).unwrap(), "written");
         std::fs::remove_file(output_path).unwrap();
 
-        let stale_path =
-            std::env::temp_dir().join(format!("zhsh-bound-output-stale-{}", std::process::id()));
+        let stale_path = output_root.join("stale");
         let _ = std::fs::remove_file(&stale_path);
         let stale_plan = shell.prepare_agent_command(&format!(
             "/usr/bin/printf replaced > '{}'",
@@ -1361,6 +1363,7 @@ mod tests {
             "appeared-after-approval"
         );
         std::fs::remove_file(stale_path).unwrap();
+        std::fs::remove_dir_all(output_root).unwrap();
     }
 
     #[cfg(unix)]

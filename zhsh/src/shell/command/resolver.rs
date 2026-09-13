@@ -143,7 +143,18 @@ pub(crate) fn resolve_agent_executable(
         name,
         &session.env,
         0,
+        true,
     )
+}
+
+/// Native 绑定只读取窄环境，不解释 shebang 或会话语言状态。
+pub(crate) fn resolve_native_executable(
+    cwd: &Path,
+    path: Option<&str>,
+    name: &str,
+    environment: &std::collections::HashMap<String, String>,
+) -> Option<AgentResolvedExecutable> {
+    resolve_agent_executable_from(cwd, path, name, environment, 0, false)
 }
 
 fn resolve_agent_executable_from(
@@ -152,6 +163,7 @@ fn resolve_agent_executable_from(
     name: &str,
     environment: &std::collections::HashMap<String, String>,
     depth: usize,
+    inspect_interpreters: bool,
 ) -> Option<AgentResolvedExecutable> {
     let (resolved_path, path_index, stable_path_entry) =
         first_executable_path(cwd, path_value, name)?;
@@ -188,12 +200,21 @@ fn resolve_agent_executable_from(
     }
 
     let mut interpreters = Vec::new();
-    match interpreter_targets(&canonical_path) {
+    match if inspect_interpreters {
+        interpreter_targets(&canonical_path)
+    } else {
+        Ok(Vec::new())
+    } {
         Ok(targets) if depth < MAX_INTERPRETER_DEPTH => {
             for target in targets {
-                let Some(interpreter) =
-                    resolve_agent_executable_from(cwd, path_value, &target, environment, depth + 1)
-                else {
+                let Some(interpreter) = resolve_agent_executable_from(
+                    cwd,
+                    path_value,
+                    &target,
+                    environment,
+                    depth + 1,
+                    true,
+                ) else {
                     binding = ExecutableBinding::Untrusted;
                     binding_reason = Some(format!("无法绑定脚本解释器 {target}"));
                     break;
@@ -238,7 +259,7 @@ fn resolve_agent_executable_from(
     })
 }
 
-fn first_executable_path(
+pub(crate) fn first_executable_path(
     cwd: &Path,
     path_value: Option<&str>,
     name: &str,
@@ -284,16 +305,18 @@ pub(crate) fn resolution_matches(
         },
         None => None,
     };
-    resolve_agent_executable_from(cwd, path_value, name, environment, 0).is_some_and(|current| {
-        current.resolved_path == expected.resolved_path
-            && current.canonical_path == expected.canonical_path
-            && current.resolved_identity == expected.resolved_identity
-            && current.identity == expected.identity
-            && current.path_index == expected.path_index
-            && current.binding == expected.binding
-            && current.path_components == expected.path_components
-            && current.interpreters == expected.interpreters
-    })
+    resolve_agent_executable_from(cwd, path_value, name, environment, 0, true).is_some_and(
+        |current| {
+            current.resolved_path == expected.resolved_path
+                && current.canonical_path == expected.canonical_path
+                && current.resolved_identity == expected.resolved_identity
+                && current.identity == expected.identity
+                && current.path_index == expected.path_index
+                && current.binding == expected.binding
+                && current.path_components == expected.path_components
+                && current.interpreters == expected.interpreters
+        },
+    )
 }
 
 /// 判断计划中的外部目标是否仍是准备时验证的同一文件。

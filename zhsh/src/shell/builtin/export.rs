@@ -132,6 +132,52 @@ pub(crate) fn execute(shell: &mut SessionState, args: &[String]) -> BuiltinResul
     }
 }
 
+/// Native 的普通变量重新导出须立即进入 env，不能等待 Bash 重放声明。
+pub(crate) fn execute_native(shell: &mut SessionState, args: &[String]) -> BuiltinResult {
+    let mut result = execute(shell, args);
+    if args.is_empty()
+        || args
+            .first()
+            .is_some_and(|arg| matches!(arg.as_str(), "-n" | "-p"))
+    {
+        return result;
+    }
+    for name in args
+        .iter()
+        .filter(|arg| !arg.starts_with('-') && !arg.contains('='))
+    {
+        let Some(declaration) = shell.variables.get(name).cloned() else {
+            continue;
+        };
+        let value = super::super::command::args::parse(&declaration)
+            .ok()
+            .and_then(|words| {
+                words
+                    .last()
+                    .and_then(|word| word.split_once('='))
+                    .filter(|(key, _)| key == name)
+                    .map(|(_, value)| value.to_owned())
+            });
+        match value {
+            Some(value) => {
+                if let Err(error) = shell.set_env(name, &value) {
+                    result
+                        .stderr
+                        .push_str(&format!("export: {name}: {error}\n"));
+                    result.code = 1;
+                }
+            }
+            None => {
+                result
+                    .stderr
+                    .push_str(&format!("export: {name}: Native 暂不支持该变量声明\n"));
+                result.code = 1;
+            }
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

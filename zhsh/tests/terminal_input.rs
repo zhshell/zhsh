@@ -515,3 +515,123 @@ fn tab_completion_escapes_a_directory_with_spaces_before_cd() {
     );
     assert!(!contains(&rendered, "参数过多".as_bytes()));
 }
+
+#[test]
+fn native_interrupt_stop_and_fg_preserve_terminal_control() {
+    let mut master_fd = -1;
+    let mut slave_fd = -1;
+    let window = libc::winsize {
+        ws_row: 24,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let opened = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &window,
+        )
+    };
+    assert_eq!(opened, 0, "无法创建伪终端");
+
+    let mut master = unsafe { File::from_raw_fd(master_fd) };
+    let slave = unsafe { File::from_raw_fd(slave_fd) };
+    let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0);
+    assert_eq!(
+        unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) },
+        0
+    );
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let home = std::env::temp_dir().join(format!(
+        "zhsh-native-foreground-pty-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&home).unwrap();
+
+    let stdin = slave.try_clone().unwrap();
+    let stdout = slave.try_clone().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zhsh"));
+    command
+        .arg("--native")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &home)
+        .env(
+            "ZHSH_TEST_SYSTEM_CODEC_DIR",
+            "/tmp/zhsh-test-no-system-codecs",
+        )
+        .env("TERM", "xterm-256color")
+        .stdin(Stdio::from(stdin))
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(slave));
+    // SAFETY: 子进程中只调用异步信号安全的 setsid/ioctl；PTY slave 已映射到 stdin。
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+
+    let startup = read_until(&mut master, b"$ ", Duration::from_secs(2));
+    assert!(contains(&startup, b"$ "), "未读取到 zhsh 提示符");
+
+    // Wait for the real foreground process group rather than the echoed command text.
+    for signal in *b"\x03\x1a" {
+        master.write_all(b"sleep 30\r").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::tcgetpgrp(master.as_raw_fd()) } == child.id() as i32
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_ne!(
+            unsafe { libc::tcgetpgrp(master.as_raw_fd()) },
+            child.id() as i32
+        );
+        master.write_all(&[signal]).unwrap();
+        let returned = read_until(&mut master, b"$ ", Duration::from_secs(3));
+        assert!(
+            contains(&returned, b"$ "),
+            "{}",
+            String::from_utf8_lossy(&returned)
+        );
+        if signal == b'\x1a' {
+            assert!(contains(&returned, "运行 fg 恢复".as_bytes()));
+            master.write_all(b"fg\r").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while unsafe { libc::tcgetpgrp(master.as_raw_fd()) } == child.id() as i32
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_ne!(
+                unsafe { libc::tcgetpgrp(master.as_raw_fd()) },
+                child.id() as i32
+            );
+            master.write_all(b"\x03").unwrap();
+            let resumed = read_until(&mut master, b"$ ", Duration::from_secs(3));
+            assert!(contains(&resumed, b"$ "));
+        }
+        assert_eq!(
+            unsafe { libc::tcgetpgrp(master.as_raw_fd()) },
+            child.id() as i32
+        );
+    }
+    let child_pid = child.id() as libc::pid_t;
+    // SAFETY: child_pid 是本测试创建的独立会话/进程组 leader。
+    unsafe {
+        libc::kill(-child_pid, libc::SIGKILL);
+    }
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&home);
+}

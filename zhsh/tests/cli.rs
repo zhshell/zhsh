@@ -25,7 +25,7 @@ fn help_does_not_start_the_repl() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("用法: zhsh [--help | --version | --trace-agent | --native]"));
     assert!(stdout.contains("--trace-agent  临时记录"));
-    assert!(stdout.contains("--native  ASCII 输入进入空处理旁路"));
+    assert!(stdout.contains("--native  用户与模型命令经 PATH 直接执行 ELF 二进制"));
     assert!(output.stderr.is_empty());
 }
 
@@ -102,19 +102,15 @@ fn native_bypasses_ascii_commands_but_keeps_agent_routing() {
             .unwrap();
         child.wait_with_output().unwrap()
     };
-    let baseline = run(true, "");
     let bypassed = run(
         true,
-        "printf UNEXPECTED\npwd\ncd /\nexit 9\nprintf x > sentinel\nprintf 'unfinished\n",
+        "printf NATIVE_OK\ncd /\nprintf x > sentinel\nprintf 'unfinished\nexit 9\n",
     );
-    assert_eq!(bypassed.status.code(), baseline.status.code());
-    assert_eq!(bypassed.stdout, baseline.stdout);
-    assert_eq!(bypassed.stderr, baseline.stderr);
+    assert_eq!(bypassed.status.code(), Some(9));
+    assert_eq!(bypassed.stdout, b"NATIVE_OK");
     assert!(!home.join("sentinel").exists());
 
-    // An unconfigured Agent still reports its existing error. The ASCII exit
-    // after it must neither terminate with 9 nor overwrite that error status.
-    let agent = run(true, "检查状态\nexit 9\n");
+    let agent = run(true, "检查状态\n");
     assert_eq!(agent.status.code(), Some(1));
     assert!(String::from_utf8(agent.stderr)
         .unwrap()

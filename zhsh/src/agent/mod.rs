@@ -80,6 +80,7 @@ pub(crate) struct ClarificationReply {
 
 pub(crate) struct Task {
     native: bool,
+    native_history: Vec<String>,
     messages: Vec<LlmMessage>,
     phase: u8,
     phase_turns: i32,
@@ -192,6 +193,12 @@ pub(crate) enum PhaseResult {
 }
 
 impl Task {
+    pub(crate) fn set_native_history(&mut self, history: &[String]) {
+        if self.native {
+            self.native_history = history.to_vec();
+        }
+    }
+
     pub(crate) fn new_with_runtime(
         shell: &Shell,
         input: &str,
@@ -238,6 +245,7 @@ impl Task {
         Self {
             messages: initial_messages(&context, input),
             native: false,
+            native_history: Vec::new(),
             phase: 1,
             phase_turns: 0,
             clarifications: 0,
@@ -1175,31 +1183,67 @@ fn run_phase_with_confirmation(
         }
 
         if let AgentOut::Run { command, .. } = &output {
-            if task.native {
-                task.flow = AgentFlowState::Finished;
+            let plan = if task.native {
                 if cancellation.is_cancelled() {
+                    task.flow = AgentFlowState::Finished;
                     return PhaseResult::Finished(RunResult::cancelled(
                         CancelCause::UserInterrupted,
                         task.total_turns,
                     ));
                 }
+                let displayed = task.secret_redactor.redact(command.trim());
+                terminal::present(terminal::AgentEvent::CommandProposed {
+                    command: &displayed,
+                });
                 if turn == MAX_ROUNDS {
+                    task.flow = AgentFlowState::Finished;
                     return PhaseResult::Finished(RunResult::incomplete(
                         "第6轮禁止执行新命令",
                         task.total_turns,
                     ));
                 }
-                crate::shell::process_native(command);
-                return PhaseResult::Finished(RunResult::incomplete(
-                    "Native 空执行路径尚未执行命令",
-                    task.total_turns,
-                ));
-            }
-            let plan = shell.prepare_agent_command(command);
+                let prepared = shell.prepare_native_agent_command(command);
+                if cancellation.is_cancelled() {
+                    task.flow = AgentFlowState::Finished;
+                    return PhaseResult::Finished(RunResult::cancelled(
+                        CancelCause::UserInterrupted,
+                        task.total_turns,
+                    ));
+                }
+                match prepared {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        shell.record_native_preparation_failure(&error);
+                        let reason = task.secret_redactor.redact(&error.to_string());
+                        terminal::present(terminal::AgentEvent::CommandRejected {
+                            reason: &reason,
+                        });
+                        if error.is_failure() {
+                            task.flow = AgentFlowState::Finished;
+                            return PhaseResult::Finished(RunResult::failed(
+                                reason,
+                                task.total_turns,
+                            ));
+                        }
+                        task.messages.push(LlmMessage::new(
+                            "assistant",
+                            task.secret_redactor
+                                .redact(&serialize_agent_response(&output)),
+                        ));
+                        task.messages.push(LlmMessage::new("user", format!("result:unsupported_execution\nexecution_started:false\nreason:{reason}\n命令未执行；可在剩余轮次修正受支持的程序名与字面参数。")));
+                        task.flow = AgentFlowState::Running;
+                        continue;
+                    }
+                }
+            } else {
+                shell.prepare_agent_command(command)
+            };
             let displayed_command = task.secret_redactor.redact(&plan.original);
-            terminal::present(terminal::AgentEvent::CommandProposed {
-                command: &displayed_command,
-            });
+            if !task.native {
+                terminal::present(terminal::AgentEvent::CommandProposed {
+                    command: &displayed_command,
+                });
+            }
             if turn == MAX_ROUNDS {
                 task.flow = AgentFlowState::Finished;
                 return PhaseResult::Finished(RunResult::incomplete(
@@ -1249,9 +1293,16 @@ fn run_phase_with_confirmation(
                 task.flow = AgentFlowState::Running;
                 continue;
             }
-            let assessment = task
+            let mut assessment = task
                 .safety_engine
                 .assess_plan_for_task(&plan, &task.task_root);
+            if task.native && shell.native_builtin_requires_confirmation(&plan) {
+                assessment.level = assessment.level.max(SafetyLevel::StateChanging);
+                assessment.semantic_level =
+                    assessment.semantic_level.max(SafetyLevel::StateChanging);
+                assessment.session_mutation = true;
+                assessment.mandatory_confirmation = true;
+            }
             let decision = safety::decide(task.agent_trust, &assessment);
             task.operation_log.safety_assessed(
                 operation_id,
@@ -1326,7 +1377,11 @@ fn execute_pending(
 ) -> Option<PhaseResult> {
     let cancellation = Arc::new(CancellationToken::default());
     let _active = ActiveCancellation::register(Arc::clone(&cancellation));
-    let interactive = shell.agent_plan_requires_terminal(&pending.plan);
+    let interactive = if task.native {
+        shell.native_agent_plan_requires_terminal(&pending.plan)
+    } else {
+        shell.agent_plan_requires_terminal(&pending.plan)
+    };
     let control = (!interactive).then(|| {
         terminal::start_manual_control(
             Arc::clone(&cancellation),
@@ -1336,12 +1391,69 @@ fn execute_pending(
     });
     task.operation_log
         .execution_dispatched(pending.operation_id, task.phase, task.phase_turns);
-    let execution = shell.execute_agent_plan(pending.plan.clone(), &cancellation);
+    let (execution, not_started) = if task.native {
+        match shell.execute_native_agent_plan_with_history(
+            pending.plan.clone(),
+            &cancellation,
+            &task.native_history,
+        ) {
+            Ok(result) => (Ok(result), None),
+            Err(crate::shell::NativeExecutionError::Execution(error)) => (Err(error), None),
+            Err(crate::shell::NativeExecutionError::NotStarted { reason, error }) => {
+                (Err(error), Some(reason))
+            }
+        }
+    } else {
+        (
+            shell.execute_agent_plan(pending.plan.clone(), &cancellation),
+            None,
+        )
+    };
     let event = control.and_then(terminal::ManualControlGuard::stop);
     if event == Some(terminal::ManualControlEvent::QuotaExhausted) {
         terminal::present(terminal::AgentEvent::SafetyNotice {
             message: "澄清额度已耗尽，无法手动澄清",
         });
+    }
+    if let Some(not_started) = not_started {
+        task.operation_log.execution_not_started(
+            pending.operation_id,
+            task.phase,
+            task.phase_turns,
+        );
+        if cancellation.is_hard_cancelled() {
+            task.flow = AgentFlowState::Finished;
+            return Some(PhaseResult::Finished(RunResult::cancelled(
+                CancelCause::UserInterrupted,
+                task.total_turns,
+            )));
+        }
+        let error = execution.expect_err("Native NotStarted must carry an error");
+        let reason = task.secret_redactor.redact(&error.to_string());
+        terminal::present(terminal::AgentEvent::CommandRejected { reason: &reason });
+        task.messages
+            .push(LlmMessage::new("assistant", pending.assistant_message));
+        let category = if not_started == crate::shell::NativeNotStartedReason::PlanStale {
+            "plan_stale"
+        } else {
+            "execution_failed"
+        };
+        task.messages.push(LlmMessage::new("user", format!("result:{category}\noperation_id:{}\nexecution_started:false\nreason:{reason}\n命令未执行；请在剩余轮次重新准备。", pending.operation_id)));
+        if event == Some(terminal::ManualControlEvent::Requested) {
+            task.flow = AgentFlowState::ManualPaused(ManualPauseState {
+                clarification: task.clarifications + 1,
+                resume: ManualResumePoint::ContinueAfterRecordedInterruption,
+            });
+            return Some(PhaseResult::ManualClarify {
+                phase: task.phase,
+                phase_turns: task.phase_turns,
+                total_turns: task.total_turns,
+                clarification: task.clarifications + 1,
+                command_interrupted: false,
+            });
+        }
+        task.flow = AgentFlowState::Running;
+        return None;
     }
     if cancellation.is_hard_cancelled() {
         match &execution {
@@ -1383,6 +1495,13 @@ fn execute_pending(
                 &pending.assessment,
                 &command_result,
             );
+            if task.native && shell.should_exit {
+                task.flow = AgentFlowState::Finished;
+                return Some(PhaseResult::Finished(RunResult::incomplete(
+                    "已执行 exit，会话已退出",
+                    task.total_turns,
+                )));
+            }
             if manual_requested {
                 task.flow = AgentFlowState::ManualPaused(ManualPauseState {
                     clarification: task.clarifications + 1,
@@ -1886,19 +2005,21 @@ mod tests {
     }
 
     #[test]
-    fn native_run_ends_without_confirmation_execution_or_evidence() {
+    fn native_preparation_rejection_continues_without_execution_or_evidence() {
         let root = temporary_directory("native-run");
         for command in [
-            "touch sentinel",
             "printf x > sentinel",
-            "cd /",
-            "exit 9",
+            "cd $HOME",
+            "source $HOME",
             "工具 参数",
         ] {
-            let agent = native_completion(vec![serde_json::json!({
-                "action": "run", "purpose": "测试", "command": command
-            })
-            .to_string()]);
+            let agent = native_completion(vec![
+                serde_json::json!({
+                    "action": "run", "purpose": "测试", "command": command
+                })
+                .to_string(),
+                r#"{"action":"done","answer":"未执行"}"#.into(),
+            ]);
             let mut shell = test_shell();
             shell.cwd = root.clone();
             let mut task = Task::new(&shell, "测试");
@@ -1910,9 +2031,12 @@ mod tests {
                     PhaseResult::Finished(result) => result,
                     _ => panic!("Native run must finish the task"),
                 };
-            assert!(result.is_incomplete());
-            assert!(result.text().contains("Native 空执行路径尚未执行命令"));
-            assert_eq!(agent.requests.load(Ordering::Relaxed), 1);
+            assert_eq!(result.text(), "未执行");
+            assert_eq!(agent.requests.load(Ordering::Relaxed), 2);
+            assert!(task
+                .messages
+                .iter()
+                .any(|m| m.content.contains("execution_started:false")));
             assert_eq!(shell.cwd, root);
             assert!(!shell.should_exit);
             assert!(!root.join("sentinel").exists());
@@ -1926,10 +2050,154 @@ mod tests {
     }
 
     #[test]
+    fn native_agent_requires_authorization_and_reports_real_side_effects() {
+        for approved in [false, true] {
+            let root = temporary_directory("native-authorized");
+            let mut shell = test_shell();
+            shell.cwd = root.clone();
+            shell.env.insert("PATH".into(), "/usr/bin:/bin".into());
+            let agent = native_completion(vec![
+                r#"{"action":"run","purpose":"创建测试文件","command":"touch visible"}"#.into(),
+                r#"{"action":"done","answer":"结束"}"#.into(),
+            ]);
+            let mut task = Task::new(&shell, "测试");
+            task.native = true;
+            let confirmations = AtomicUsize::new(0);
+            let result = run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+                confirmations.fetch_add(1, Ordering::Relaxed);
+                if approved {
+                    terminal::ConfirmationDecision::Approved
+                } else {
+                    terminal::ConfirmationDecision::Rejected
+                }
+            });
+            assert!(matches!(result, PhaseResult::Finished(_)));
+            assert_eq!(confirmations.load(Ordering::Relaxed), 1);
+            assert_eq!(root.join("visible").exists(), approved);
+            if approved {
+                assert_eq!(agent.requests.load(Ordering::Relaxed), 2);
+                assert!(
+                    task.messages.iter().any(|m| m.content.contains("exit:0")),
+                    "{:?}",
+                    task.messages
+                );
+                assert_eq!(shell.last_exit, 0);
+            } else {
+                assert!(!task.mutated_in_phase);
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_confirmed_target_replacement_is_certainly_not_started() {
+        let root = temporary_directory("native-stale");
+        let executable = root.join("probe");
+        fs::copy("/usr/bin/touch", &executable).unwrap();
+        let mut shell = test_shell();
+        shell.cwd = root.clone();
+        shell
+            .env
+            .insert("PATH".into(), root.to_string_lossy().into_owned());
+        let agent = native_completion(vec![
+            r#"{"action":"run","purpose":"测试","command":"probe sentinel"}"#.into(),
+            r#"{"action":"done","answer":"未执行"}"#.into(),
+        ]);
+        let mut task = Task::new(&shell, "测试");
+        task.native = true;
+        let result = run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+            fs::copy("/usr/bin/false", &executable).unwrap();
+            terminal::ConfirmationDecision::Approved
+        });
+        assert!(matches!(result, PhaseResult::Finished(_)));
+        assert_eq!(agent.requests.load(Ordering::Relaxed), 2);
+        assert!(!root.join("sentinel").exists());
+        assert!(!task.mutated_in_phase);
+        assert_eq!(task.strongest_executed_level, None);
+        assert!(!task.has_observation_evidence);
+        assert!(task
+            .messages
+            .iter()
+            .any(|m| m.content.contains("result:plan_stale")
+                && m.content.contains("execution_started:false")));
+        assert_eq!(shell.last_exit, 126);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_agent_builtin_state_is_visible_to_following_commands() {
+        let root = temporary_directory("native-agent-builtins");
+        fs::create_dir(root.join("child")).unwrap();
+        fs::write(
+            root.join("child/commands"),
+            "export SOURCED=yes\nalias show='pwd'\n",
+        )
+        .unwrap();
+        let mut shell = test_shell();
+        shell.cwd = root.clone();
+        shell.env.insert("PATH".into(), "/usr/bin:/bin".into());
+        let agent = native_completion(vec![
+            r#"{"action":"run","purpose":"切换目录","command":"cd child"}"#.into(),
+            r#"{"action":"run","purpose":"读取会话命令","command":"source commands"}"#.into(),
+            r#"{"action":"run","purpose":"显示目录","command":"show"}"#.into(),
+            r#"{"action":"done","answer":"完成"}"#.into(),
+        ]);
+        let mut task = Task::new(&shell, "测试");
+        task.native = true;
+        let confirmations = AtomicUsize::new(0);
+        let result = run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+            confirmations.fetch_add(1, Ordering::Relaxed);
+            terminal::ConfirmationDecision::Approved
+        });
+        assert!(matches!(result, PhaseResult::Finished(_)));
+        assert_eq!(agent.requests.load(Ordering::Relaxed), 4);
+        assert!(confirmations.load(Ordering::Relaxed) >= 2);
+        assert_eq!(shell.cwd, root.join("child"));
+        assert_eq!(shell.env.get("SOURCED").map(String::as_str), Some("yes"));
+        assert!(task.messages.iter().any(|m| m
+            .content
+            .contains(&root.join("child").to_string_lossy().to_string())
+            && m.content.contains("execution_started:true")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_rejected_cd_does_not_change_session_and_exit_ends_requests() {
+        let root = temporary_directory("native-agent-exit");
+        let mut shell = test_shell();
+        shell.cwd = root.clone();
+        let agent = native_completion(vec![
+            r#"{"action":"run","purpose":"切换目录","command":"cd /"}"#.into(),
+        ]);
+        let mut task = Task::new(&shell, "测试");
+        task.native = true;
+        let _ = run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+            terminal::ConfirmationDecision::Rejected
+        });
+        assert_eq!(shell.cwd, root);
+        let agent = native_completion(vec![
+            r#"{"action":"run","purpose":"退出会话","command":"exit 7"}"#.into(),
+        ]);
+        let mut task = Task::new(&shell, "测试");
+        task.native = true;
+        let result = run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+            terminal::ConfirmationDecision::Approved
+        });
+        assert!(matches!(result, PhaseResult::Finished(_)));
+        assert_eq!(agent.requests.load(Ordering::Relaxed), 1);
+        assert!(shell.should_exit);
+        assert_eq!(shell.last_exit, 7);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn native_format_repair_keeps_the_sixth_round_guard() {
         for invalid_count in [1, 5] {
             let mut texts = vec!["invalid".to_string(); invalid_count];
-            texts.push(r#"{"action":"run","purpose":"测试","command":"touch sentinel"}"#.into());
+            texts.push(r#"{"action":"run","purpose":"测试","command":"cd $HOME"}"#.into());
+            if invalid_count == 1 {
+                texts.push(r#"{"action":"done","answer":"未执行"}"#.into());
+            }
             let agent = native_completion(texts);
             let mut shell = test_shell();
             let mut task = Task::new(&shell, "测试");
@@ -1938,12 +2206,14 @@ mod tests {
                 PhaseResult::Finished(result) => result,
                 _ => panic!("expected finished task"),
             };
-            assert!(result.is_incomplete());
-            assert_eq!(agent.requests.load(Ordering::Relaxed), invalid_count + 1);
+            assert_eq!(
+                agent.requests.load(Ordering::Relaxed),
+                if invalid_count == 5 { 6 } else { 3 }
+            );
             assert!(result.text().contains(if invalid_count == 5 {
                 "第6轮禁止执行新命令"
             } else {
-                "Native 空执行路径尚未执行命令"
+                "未执行"
             }));
             assert!(!task.operation_log.prompt_summary().contains("operation:"));
         }
@@ -1962,6 +2232,7 @@ mod tests {
         let agent = native_completion(vec![
             r#"{"action":"clarify","questions":[{"id":"scope","prompt":"范围？","multiple":false,"choices":[]}]}"#.into(),
             r#"{"action":"run","purpose":"测试","command":"pwd"}"#.into(),
+            r#"{"action":"done","answer":"完成"}"#.into(),
         ]);
         let mut task = Task::new(&shell, "测试");
         task.native = true;
@@ -1980,12 +2251,14 @@ mod tests {
             },
             &shell.cwd,
         );
-        let result = match run_phase(&agent, &mut shell, &mut task) {
+        let result = match run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+            terminal::ConfirmationDecision::Approved
+        }) {
             PhaseResult::Finished(result) => result,
             _ => panic!("run must finish after clarification"),
         };
-        assert!(result.text().contains("Native 空执行路径尚未执行命令"));
-        assert_eq!(agent.requests.load(Ordering::Relaxed), 2);
+        assert_eq!(result.text(), "完成");
+        assert_eq!(agent.requests.load(Ordering::Relaxed), 3);
         assert_eq!(task.phase, 2);
     }
 

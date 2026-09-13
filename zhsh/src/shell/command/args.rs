@@ -118,6 +118,155 @@ pub(crate) fn parse(input: &str) -> Result<Vec<String>, ParseError> {
     Ok(words)
 }
 
+/// Native 的完整字面调用；仅空格/TAB 分词，不委托 Shell 或执行展开。
+pub(crate) fn parse_native_literal(input: &str) -> Result<Vec<String>, ParseError> {
+    parse_native_words(input, false)
+}
+
+/// 已有内建自行处理目录参数中的 ~；不增加通用参数展开。
+pub(crate) fn parse_native_builtin_literal(input: &str) -> Result<Vec<String>, ParseError> {
+    parse_native_words(input, true)
+}
+
+fn parse_native_words(input: &str, builtin_arguments: bool) -> Result<Vec<String>, ParseError> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quoted = false;
+    let mut assignment_prefix = true;
+    let mut quote = None;
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\0' {
+            return Err(ParseError::Syntax("Native 参数不能包含 NUL"));
+        }
+        match quote {
+            Some(Quote::Single) => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    word.push(c);
+                }
+            }
+            Some(Quote::Double) => match c {
+                '"' => quote = None,
+                '$' | '`' => return Err(ParseError::NeedsBash),
+                '\\' => {
+                    let next = chars.next().ok_or(ParseError::Syntax("不完整的转义"))?;
+                    if matches!(next, '\n' | '\r' | '\0') {
+                        return Err(ParseError::NeedsBash);
+                    }
+                    if !matches!(next, '$' | '`' | '"' | '\\') {
+                        word.push('\\');
+                    }
+                    word.push(next);
+                }
+                _ => word.push(c),
+            },
+            None => match c {
+                ' ' | '\t' => {
+                    if started {
+                        native_finish_word(&mut words, &mut word, quoted)?;
+                        started = false;
+                        quoted = false;
+                        assignment_prefix = true;
+                    }
+                }
+                '\'' | '"' => {
+                    quote = Some(if c == '\'' {
+                        Quote::Single
+                    } else {
+                        Quote::Double
+                    });
+                    started = true;
+                    quoted = true;
+                    assignment_prefix = false;
+                }
+                '\\' => {
+                    let next = chars.next().ok_or(ParseError::Syntax("不完整的转义"))?;
+                    if matches!(next, '\n' | '\r' | '\0') {
+                        return Err(ParseError::NeedsBash);
+                    }
+                    word.push(next);
+                    started = true;
+                    quoted = true;
+                    assignment_prefix = false;
+                }
+                '$' | '`' | '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '&' | ';' | '|'
+                | '<' | '>' | '\n' | '\r' => return Err(ParseError::NeedsBash),
+                '#' if !started => return Err(ParseError::NeedsBash),
+                '~' if !started && !(builtin_arguments && !words.is_empty()) => {
+                    return Err(ParseError::NeedsBash)
+                }
+                '=' if words.is_empty() && assignment_prefix && native_variable_name(&word) => {
+                    return Err(ParseError::NeedsBash);
+                }
+                _ => {
+                    word.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return Err(ParseError::Syntax("引用未闭合"));
+    }
+    if started {
+        native_finish_word(&mut words, &mut word, quoted)?;
+    }
+    Ok(words)
+}
+
+fn native_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn native_finish_word(
+    words: &mut Vec<String>,
+    word: &mut String,
+    quoted: bool,
+) -> Result<(), ParseError> {
+    if words.is_empty() {
+        if word.is_empty() || word.contains('/') {
+            return Err(ParseError::Syntax("Native 本期仅支持非空 PATH 程序名"));
+        }
+        if !quoted
+            && matches!(
+                word.as_str(),
+                "!" | "[["
+                    | "]]"
+                    | "{"
+                    | "}"
+                    | "case"
+                    | "coproc"
+                    | "do"
+                    | "done"
+                    | "elif"
+                    | "else"
+                    | "esac"
+                    | "fi"
+                    | "for"
+                    | "function"
+                    | "if"
+                    | "in"
+                    | "select"
+                    | "then"
+                    | "time"
+                    | "until"
+                    | "while"
+            )
+        {
+            return Err(ParseError::NeedsBash);
+        }
+    }
+    words.push(std::mem::take(word));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +313,57 @@ mod tests {
             parse("export A=broken\\"),
             Err(ParseError::Syntax("存在未完成的转义"))
         );
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    #[test]
+    fn native_literal_arguments_preserve_boundaries() {
+        for (input, expected) in [
+            (
+                r#"probe -n "a b" 'c d' e\ f """#,
+                vec!["probe", "-n", "a b", "c d", "e f", ""],
+            ),
+            (
+                r#"probe a"b"'c' '$HOME' \* "a\q""#,
+                vec!["probe", "abc", "$HOME", "*", "a\\q"],
+            ),
+            (
+                "probe a\u{2003}b\t中文",
+                vec!["probe", "a\u{2003}b", "中文"],
+            ),
+            ("'if' x", vec!["if", "x"]),
+            ("'A'=b", vec!["A=b"]),
+            ("probe 'a\nb'", vec!["probe", "a\nb"]),
+        ] {
+            assert_eq!(parse_native_literal(input).unwrap(), expected, "{input}");
+        }
+    }
+    #[test]
+    fn native_rejects_whole_unsupported_requests() {
+        for input in [
+            "probe $HOME",
+            "probe ~",
+            "probe *.rs",
+            "probe a; touch x",
+            "probe > x",
+            "if x",
+            "A=\"x\" probe",
+            "probe a\nb",
+            "probe a\rb",
+            "probe a\\\nb",
+            "probe \"a\\\nb\"",
+            "probe 'unfinished",
+            "probe a\\",
+            "probe # x",
+            "/bin/true",
+            "''",
+            "probe \0",
+        ] {
+            assert!(parse_native_literal(input).is_err(), "{input:?}");
+        }
+        assert!(parse_native_literal(" \t ").unwrap().is_empty());
     }
 }

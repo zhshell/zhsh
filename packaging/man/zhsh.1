@@ -10,9 +10,13 @@ zhsh \- 支持非 ASCII Agent 输入的 AI 增强 Shell
 .SH 选项
 .TP
 .B \-\-native
-ASCII 首字符输入进入 zhsh 的空处理旁路，不执行命令或 builtin，也不输出处理结果。
-非 ASCII 输入仍进入 Agent；模型 run 命令进入同一空路径后以未完成结束任务，不再请求模型。
-done 和 clarify 保持原流程。此入口尚未实现 Native Shell；使用 EOF 退出。
+启用独立的 Native PATH 执行旁路，默认 Bash 委托模式不变。
+ASCII 用户命令和模型 run 命令按会话 PATH 查找并直接执行 ELF 二进制；
+支持空格、引号和反斜杠组成的字面参数，现有内建命令在当前 zhsh 会话执行。
+source/. 逐行执行当前 Native 命令，遇不支持语法停止，保留此前修改；不支持位置参数或完整 Bash 脚本。
+尚不支持通用变量展开、管道、重定向、外部脚本目标或显式程序路径。
+模型命令仍经原有 Safety 和授权流程，执行结果反馈模型；不支持的输入明确拒绝，不内部回退 Bash。
+此入口不是完整 Shell；使用 exit 或 EOF 退出。
 .TP
 .BR \-h , " " \-\-help
 显示进程级用法并退出，不启动 Shell。

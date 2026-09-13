@@ -572,6 +572,42 @@ pub(super) fn dispatch_pipeline_source_words(
     )
 }
 
+/// Native 已授权/用户内建入口，复用注册表和处理器；不使用过渡模式的 Agent 白名单。
+pub(super) fn dispatch_native_words(
+    session: &mut SessionState,
+    name: &str,
+    arguments: &[String],
+    history: &[String],
+    ports: DispatchPorts<'_, '_, '_, '_>,
+) -> Option<BuiltinResult> {
+    match name {
+        // source/. is implemented by the Native Shell caller; never invoke the Bash loader here.
+        "source" | "." => Some(BuiltinResult::error(
+            "source: 必须使用 Native 文件执行入口\n",
+        )),
+        "export" => Some(builtin::export::execute_native(session, arguments)),
+        "type" => Some(builtin::r#type::execute_native(
+            session,
+            arguments,
+            &names().collect::<Vec<_>>(),
+        )),
+        "help" => Some(builtin::help::execute(
+            arguments,
+            &descriptions().collect::<Vec<_>>(),
+            native_usage,
+        )),
+        _ => dispatch_words(session, name, arguments, Origin::User, history, ports),
+    }
+}
+
+fn native_usage(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    if matches!(name, "source" | ".") {
+        Some(("source 文件 / . 文件", "在当前会话逐行执行 Native 命令", "支持当前 Native 字面命令与内建；不调用 Bash。不支持的语法会停止读取，此前的状态修改保留；位置参数尚未实现。"))
+    } else {
+        usage(name)
+    }
+}
+
 fn dispatch_words(
     session: &mut SessionState,
     name: &str,

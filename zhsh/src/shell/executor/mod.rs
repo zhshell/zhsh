@@ -17,6 +17,7 @@ mod compound;
 #[cfg(unix)]
 mod foreground;
 mod interactive;
+pub(super) mod native;
 mod script_pipe;
 pub(crate) mod source_loader;
 
