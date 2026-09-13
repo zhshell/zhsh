@@ -10,6 +10,7 @@ mod completion;
 mod input;
 mod llm_wizard;
 mod manual_clarification;
+mod native;
 mod prompt;
 mod safety_ui;
 mod user_home;
@@ -33,9 +34,17 @@ use std::time::Instant;
 #[non_exhaustive]
 pub struct RunOptions {
     trace_agent: bool,
+    native: bool,
 }
 
 impl RunOptions {
+    /// 将 ASCII 用户输入交给尚无执行行为的 Native 旁路。
+    #[must_use]
+    pub fn with_native(mut self, enabled: bool) -> Self {
+        self.native = enabled;
+        self
+    }
+
     /// 设置是否记录严格 Agent 协议无法解析的原始模型响应。
     ///
     /// 记录可能包含用户任务和 Provider 返回的内容，只应在当前进程排障时开启。
@@ -132,7 +141,7 @@ pub fn run_with_options(options: RunOptions) -> i32 {
             return 1;
         }
         for line in input.lines() {
-            process(&mut shell, &agent, line, &[]);
+            process(&mut shell, &agent, line, &[], options.native);
             if shell.should_exit {
                 break;
             }
@@ -202,7 +211,7 @@ pub fn run_with_options(options: RunOptions) -> i32 {
         };
         match rl.readline(&prompt_renderer.prompt(&shell, context)) {
             Ok(mut line) => {
-                while Shell::input_needs_continuation(&line) {
+                while input_needs_continuation(&line, options.native) {
                     match rl.readline(&prompt_renderer.secondary_prompt(&shell, context)) {
                         Ok(continuation) => {
                             line.push('\n');
@@ -239,7 +248,7 @@ pub fn run_with_options(options: RunOptions) -> i32 {
                     Err(error) => eprintln!("zhsh: 无法记录历史: {error}"),
                 }
                 let history = history_entries(&rl);
-                process(&mut shell, &agent, &line, &history);
+                process(&mut shell, &agent, &line, &history, options.native);
                 command_number = command_number.saturating_add(1);
                 // 内建命令可能改变 cwd、PATH、alias 或 LLM 配置；下一次读取前刷新补全器。
                 rl.set_helper(Some(completion::ShellCompleter::new(
@@ -356,10 +365,30 @@ fn history_entries<H: rustyline::Helper, I: History>(editor: &Editor<H, I>) -> V
         .collect()
 }
 
-fn process(shell: &mut Shell, agent: &agent::AgentRuntime, input: &str, history: &[String]) -> i32 {
+fn input_needs_continuation(input: &str, native: bool) -> bool {
+    if native
+        && input::route(input).is_some_and(|routed| routed.kind == input::InputKind::UserCommand)
+    {
+        return false;
+    }
+    Shell::input_needs_continuation(input)
+}
+
+fn process(
+    shell: &mut Shell,
+    agent: &agent::AgentRuntime,
+    input: &str,
+    history: &[String],
+    native: bool,
+) -> i32 {
     let Some(routed) = input::route(input) else {
         return 0;
     };
+
+    if native && routed.kind == input::InputKind::UserCommand {
+        native::process(&routed.original);
+        return shell.last_exit;
+    }
 
     if routed.kind == input::InputKind::AgentInput {
         let freshness = Arc::new(crate::common::CancellationToken::default());

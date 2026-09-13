@@ -6,8 +6,12 @@
 zhsh \- 支持非 ASCII Agent 输入的 AI 增强 Shell
 .SH 概要
 .B zhsh
-.RI [ --help | --version | --trace-agent ]
+.RI [ --help | --version | --trace-agent | --native ]
 .SH 选项
+.TP
+.B \-\-native
+ASCII 首字符输入进入 zhsh 的空处理旁路，不执行命令或 builtin，也不输出处理结果。
+非 ASCII 输入保持原有 Agent 流程。此入口尚未实现 Native Shell；使用 EOF 退出。
 .TP
 .BR \-h , " " \-\-help
 显示进程级用法并退出，不启动 Shell。
