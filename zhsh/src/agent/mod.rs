@@ -79,6 +79,7 @@ pub(crate) struct ClarificationReply {
 }
 
 pub(crate) struct Task {
+    native: bool,
     messages: Vec<LlmMessage>,
     phase: u8,
     phase_turns: i32,
@@ -191,15 +192,22 @@ pub(crate) enum PhaseResult {
 }
 
 impl Task {
-    pub(crate) fn new_with_runtime(shell: &Shell, input: &str, runtime: &AgentRuntime) -> Self {
+    pub(crate) fn new_with_runtime(
+        shell: &Shell,
+        input: &str,
+        runtime: &AgentRuntime,
+        native: bool,
+    ) -> Self {
         let context = runtime.host_context.context_for(shell);
-        Self::with_context_and_safety_engine(
+        let mut task = Self::with_context_and_safety_engine(
             shell,
             input,
             context,
             runtime.safety_engine(),
             runtime.invalid_response_diagnostics.clone(),
-        )
+        );
+        task.native = native;
+        task
     }
 
     #[cfg(test)]
@@ -229,6 +237,7 @@ impl Task {
         let task_root = std::fs::canonicalize(&shell.cwd).unwrap_or_else(|_| shell.cwd.clone());
         Self {
             messages: initial_messages(&context, input),
+            native: false,
             phase: 1,
             phase_turns: 0,
             clarifications: 0,
@@ -1166,6 +1175,26 @@ fn run_phase_with_confirmation(
         }
 
         if let AgentOut::Run { command, .. } = &output {
+            if task.native {
+                task.flow = AgentFlowState::Finished;
+                if cancellation.is_cancelled() {
+                    return PhaseResult::Finished(RunResult::cancelled(
+                        CancelCause::UserInterrupted,
+                        task.total_turns,
+                    ));
+                }
+                if turn == MAX_ROUNDS {
+                    return PhaseResult::Finished(RunResult::incomplete(
+                        "第6轮禁止执行新命令",
+                        task.total_turns,
+                    ));
+                }
+                crate::shell::process_native(command);
+                return PhaseResult::Finished(RunResult::incomplete(
+                    "Native 空执行路径尚未执行命令",
+                    task.total_turns,
+                ));
+            }
             let plan = shell.prepare_agent_command(command);
             let displayed_command = task.secret_redactor.redact(&plan.original);
             terminal::present(terminal::AgentEvent::CommandProposed {
@@ -1838,6 +1867,126 @@ mod tests {
         let mut shell = Shell::new();
         shell.llm = Some(fake_config());
         shell
+    }
+
+    fn native_completion(texts: Vec<String>) -> FakeCompletion {
+        FakeCompletion {
+            responses: Mutex::new(
+                texts
+                    .into_iter()
+                    .map(|text| LlmResponse {
+                        text,
+                        finish_reason: crate::llm::FinishReason::Completed,
+                        usage: None,
+                    })
+                    .collect(),
+            ),
+            requests: AtomicUsize::new(0),
+        }
+    }
+
+    #[test]
+    fn native_run_ends_without_confirmation_execution_or_evidence() {
+        let root = temporary_directory("native-run");
+        for command in [
+            "touch sentinel",
+            "printf x > sentinel",
+            "cd /",
+            "exit 9",
+            "工具 参数",
+        ] {
+            let agent = native_completion(vec![serde_json::json!({
+                "action": "run", "purpose": "测试", "command": command
+            })
+            .to_string()]);
+            let mut shell = test_shell();
+            shell.cwd = root.clone();
+            let mut task = Task::new(&shell, "测试");
+            task.native = true;
+            let result =
+                match run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+                    panic!("Native cannot request confirmation")
+                }) {
+                    PhaseResult::Finished(result) => result,
+                    _ => panic!("Native run must finish the task"),
+                };
+            assert!(result.is_incomplete());
+            assert!(result.text().contains("Native 空执行路径尚未执行命令"));
+            assert_eq!(agent.requests.load(Ordering::Relaxed), 1);
+            assert_eq!(shell.cwd, root);
+            assert!(!shell.should_exit);
+            assert!(!root.join("sentinel").exists());
+            assert!(!task.operation_log.prompt_summary().contains("operation:"));
+            assert!(!task.has_observation_evidence);
+            assert!(!task.mutated_in_phase);
+            assert_eq!(task.feedback_bytes, 0);
+            assert!(matches!(task.flow, AgentFlowState::Finished));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_format_repair_keeps_the_sixth_round_guard() {
+        for invalid_count in [1, 5] {
+            let mut texts = vec!["invalid".to_string(); invalid_count];
+            texts.push(r#"{"action":"run","purpose":"测试","command":"touch sentinel"}"#.into());
+            let agent = native_completion(texts);
+            let mut shell = test_shell();
+            let mut task = Task::new(&shell, "测试");
+            task.native = true;
+            let result = match run_phase(&agent, &mut shell, &mut task) {
+                PhaseResult::Finished(result) => result,
+                _ => panic!("expected finished task"),
+            };
+            assert!(result.is_incomplete());
+            assert_eq!(agent.requests.load(Ordering::Relaxed), invalid_count + 1);
+            assert!(result.text().contains(if invalid_count == 5 {
+                "第6轮禁止执行新命令"
+            } else {
+                "Native 空执行路径尚未执行命令"
+            }));
+            assert!(!task.operation_log.prompt_summary().contains("operation:"));
+        }
+    }
+
+    #[test]
+    fn native_done_and_clarification_keep_existing_behavior() {
+        let mut shell = test_shell();
+        let done = native_completion(vec![r#"{"action":"done","answer":"回答"}"#.into()]);
+        let mut task = Task::new(&shell, "测试");
+        task.native = true;
+        match run_phase(&done, &mut shell, &mut task) {
+            PhaseResult::Finished(result) => assert_eq!(result.text(), "回答"),
+            _ => panic!("done must finish"),
+        }
+        let agent = native_completion(vec![
+            r#"{"action":"clarify","questions":[{"id":"scope","prompt":"范围？","multiple":false,"choices":[]}]}"#.into(),
+            r#"{"action":"run","purpose":"测试","command":"pwd"}"#.into(),
+        ]);
+        let mut task = Task::new(&shell, "测试");
+        task.native = true;
+        let questions = match run_phase(&agent, &mut shell, &mut task) {
+            PhaseResult::Clarify { questions, .. } => questions,
+            _ => panic!("expected clarification"),
+        };
+        task.resume(
+            &questions,
+            ClarificationReply {
+                answers: vec![ClarificationAnswer {
+                    question_id: "scope".into(),
+                    selected_choice_ids: vec![],
+                    free_text: "当前目录".into(),
+                }],
+            },
+            &shell.cwd,
+        );
+        let result = match run_phase(&agent, &mut shell, &mut task) {
+            PhaseResult::Finished(result) => result,
+            _ => panic!("run must finish after clarification"),
+        };
+        assert!(result.text().contains("Native 空执行路径尚未执行命令"));
+        assert_eq!(agent.requests.load(Ordering::Relaxed), 2);
+        assert_eq!(task.phase, 2);
     }
 
     #[test]

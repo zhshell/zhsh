@@ -65,6 +65,15 @@ fn reply(stream: &mut TcpStream, model_output: &str) {
 
 #[test]
 fn sixth_run_is_rejected_without_a_seventh_request() {
+    run_request_limit(false);
+}
+
+#[test]
+fn native_run_finishes_after_one_request() {
+    run_request_limit(true);
+}
+
+fn run_request_limit(native: bool) {
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => listener,
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -92,7 +101,7 @@ fn sixth_run_is_rejected_without_a_seventh_request() {
                         &mut stream,
                         r#"{"action":"run","purpose":"执行测试命令","command":"/usr/bin/true"}"#,
                     );
-                    if request_bodies.len() == 6 {
+                    if request_bodies.len() == if native { 1 } else { 6 } {
                         quiet_deadline = Some(Instant::now() + Duration::from_millis(300));
                     }
                 }
@@ -146,7 +155,11 @@ fn sixth_run_is_rejected_without_a_seventh_request() {
         fs::set_permissions(&active_file, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zhsh"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zhsh"));
+    if native {
+        command.arg("--native");
+    }
+    let mut child = command
         .env("HOME", &home)
         .env("HTTP_PROXY", "http://127.0.0.1:9")
         .env("HTTPS_PROXY", "http://127.0.0.1:9")
@@ -177,6 +190,17 @@ fn sixth_run_is_rejected_without_a_seventh_request() {
     let terminal = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(1));
+    if native {
+        assert_eq!(requests.len(), 1, "{terminal}");
+        assert!(
+            terminal.contains("Native 空执行路径尚未执行命令"),
+            "{terminal}"
+        );
+        assert!(!terminal.contains("> /usr/bin/true"));
+        assert!(!terminal.contains("结果已反馈模型"));
+        return;
+    }
+
     assert_eq!(
         requests.len(),
         6,

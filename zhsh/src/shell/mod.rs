@@ -7,6 +7,7 @@ mod agent_plan;
 mod builtin;
 mod command;
 mod executor;
+mod native;
 mod safety_management;
 mod session;
 mod trust;
@@ -33,6 +34,7 @@ pub(crate) use agent_plan::{
 pub(crate) use executor::{
     CapturedExecution, CommandTermination, OutputEvidence, AGENT_TASK_FEEDBACK_LIMIT,
 };
+pub(crate) use native::process as process_native;
 pub(crate) use safety_management::{
     SafetyAssessmentView, SafetyCatalogView, SafetyInstallEntryView, SafetyInstallOutcomeView,
     SafetyInstallPlan, SafetyInstallReport, SafetyInstallRequest, SafetyInstallStateView,

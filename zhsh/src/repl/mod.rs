@@ -10,7 +10,6 @@ mod completion;
 mod input;
 mod llm_wizard;
 mod manual_clarification;
-mod native;
 mod prompt;
 mod safety_ui;
 mod user_home;
@@ -38,7 +37,7 @@ pub struct RunOptions {
 }
 
 impl RunOptions {
-    /// 将 ASCII 用户输入交给尚无执行行为的 Native 旁路。
+    /// 将 ASCII 用户输入和 Agent run 命令交给 Native 空执行入口。
     #[must_use]
     pub fn with_native(mut self, enabled: bool) -> Self {
         self.native = enabled;
@@ -386,7 +385,7 @@ fn process(
     };
 
     if native && routed.kind == input::InputKind::UserCommand {
-        native::process(&routed.original);
+        shell::process_native(&routed.original);
         return shell.last_exit;
     }
 
@@ -422,7 +421,7 @@ fn process(
             return 1;
         }
         let t = Instant::now();
-        let mut task = agent::Task::new_with_runtime(shell, &routed.original, agent);
+        let mut task = agent::Task::new_with_runtime(shell, &routed.original, agent, native);
         let result = loop {
             match agent::run_phase(client, shell, &mut task) {
                 agent::PhaseResult::Finished(result) => break result,
