@@ -128,7 +128,8 @@ impl AgentCommandPlan {
             prepared.program.clone(),
             &prepared.target,
         )];
-        if is_wrapper(&prepared.program) || has_nested_execution(&prepared.program, &arguments) {
+        let semantic = semantic_name(&prepared.program);
+        if is_wrapper(semantic) || has_nested_execution(semantic, &arguments) {
             // Native only binds the direct target. Existing Safety still analyzes argv, while
             // downstream executable identities remain conservative (including script contents).
             invocations.push(ResolvedInvocation::named(

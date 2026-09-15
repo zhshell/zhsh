@@ -231,8 +231,8 @@ fn native_finish_word(
     quoted: bool,
 ) -> Result<(), ParseError> {
     if words.is_empty() {
-        if word.is_empty() || word.contains('/') {
-            return Err(ParseError::Syntax("Native 本期仅支持非空 PATH 程序名"));
+        if word.is_empty() {
+            return Err(ParseError::Syntax("Native 程序名或路径不能为空"));
         }
         if !quoted
             && matches!(
@@ -335,6 +335,9 @@ mod native_tests {
                 vec!["probe", "a\u{2003}b", "中文"],
             ),
             ("'if' x", vec!["if", "x"]),
+            ("./app x", vec!["./app", "x"]),
+            ("../bin/app", vec!["../bin/app"]),
+            ("'/opt/my app' x", vec!["/opt/my app", "x"]),
             ("'A'=b", vec!["A=b"]),
             ("probe 'a\nb'", vec!["probe", "a\nb"]),
         ] {
@@ -358,7 +361,6 @@ mod native_tests {
             "probe 'unfinished",
             "probe a\\",
             "probe # x",
-            "/bin/true",
             "''",
             "probe \0",
         ] {

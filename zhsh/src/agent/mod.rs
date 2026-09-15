@@ -2051,41 +2051,45 @@ mod tests {
 
     #[test]
     fn native_agent_requires_authorization_and_reports_real_side_effects() {
-        for approved in [false, true] {
-            let root = temporary_directory("native-authorized");
-            let mut shell = test_shell();
-            shell.cwd = root.clone();
-            shell.env.insert("PATH".into(), "/usr/bin:/bin".into());
-            let agent = native_completion(vec![
-                r#"{"action":"run","purpose":"创建测试文件","command":"touch visible"}"#.into(),
+        for program in ["touch", "./touch", "/usr/bin/touch"] {
+            for approved in [false, true] {
+                let root = temporary_directory("native-authorized");
+                let mut shell = test_shell();
+                fs::copy("/usr/bin/touch", root.join("touch")).unwrap();
+                shell.cwd = root.clone();
+                shell.env.insert("PATH".into(), "/usr/bin:/bin".into());
+                let agent = native_completion(vec![
+                serde_json::json!({"action":"run", "purpose":"创建测试文件", "command":format!("{program} visible")}).to_string(),
                 r#"{"action":"done","answer":"结束"}"#.into(),
             ]);
-            let mut task = Task::new(&shell, "测试");
-            task.native = true;
-            let confirmations = AtomicUsize::new(0);
-            let result = run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
-                confirmations.fetch_add(1, Ordering::Relaxed);
+                let mut task = Task::new(&shell, "测试");
+                task.native = true;
+                let confirmations = AtomicUsize::new(0);
+                let result =
+                    run_phase_with_confirmation(&agent, &mut shell, &mut task, &|_, _, _| {
+                        confirmations.fetch_add(1, Ordering::Relaxed);
+                        if approved {
+                            terminal::ConfirmationDecision::Approved
+                        } else {
+                            terminal::ConfirmationDecision::Rejected
+                        }
+                    });
+                assert!(matches!(result, PhaseResult::Finished(_)));
+                assert_eq!(confirmations.load(Ordering::Relaxed), 1);
+                assert_eq!(root.join("visible").exists(), approved);
                 if approved {
-                    terminal::ConfirmationDecision::Approved
+                    assert_eq!(agent.requests.load(Ordering::Relaxed), 2);
+                    assert!(
+                        task.messages.iter().any(|m| m.content.contains("exit:0")),
+                        "{:?}",
+                        task.messages
+                    );
+                    assert_eq!(shell.last_exit, 0);
                 } else {
-                    terminal::ConfirmationDecision::Rejected
+                    assert!(!task.mutated_in_phase);
                 }
-            });
-            assert!(matches!(result, PhaseResult::Finished(_)));
-            assert_eq!(confirmations.load(Ordering::Relaxed), 1);
-            assert_eq!(root.join("visible").exists(), approved);
-            if approved {
-                assert_eq!(agent.requests.load(Ordering::Relaxed), 2);
-                assert!(
-                    task.messages.iter().any(|m| m.content.contains("exit:0")),
-                    "{:?}",
-                    task.messages
-                );
-                assert_eq!(shell.last_exit, 0);
-            } else {
-                assert!(!task.mutated_in_phase);
+                fs::remove_dir_all(root).unwrap();
             }
-            fs::remove_dir_all(root).unwrap();
         }
     }
 

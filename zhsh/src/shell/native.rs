@@ -38,7 +38,7 @@ impl std::fmt::Display for NativePreparationError {
             Self::InvalidInput(s) | Self::UnsupportedFormat(s) | Self::ReadFailed(s) => {
                 f.write_str(s)
             }
-            Self::NotFound => f.write_str("Native PATH 中未找到可执行程序"),
+            Self::NotFound => f.write_str("Native 未找到可执行程序"),
         }
     }
 }
@@ -463,6 +463,37 @@ mod tests {
         fs::set_permissions(root.join("probe"), fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(shell.run_native("probe"), 127);
         assert_eq!(shell.run_native(" \t "), 127);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_explicit_paths_keep_identity_format_and_downstream_checks() {
+        let root = std::env::temp_dir().join(format!("zhsh-native-paths-{}", std::process::id()));
+        fs::create_dir_all(root.join("child")).unwrap();
+        let target = root.join("my app");
+        fs::copy("/usr/bin/true", &target).unwrap();
+        let mut shell = Shell::new();
+        shell.cwd = root.join("child");
+        shell.env.insert("PATH".into(), "/nonexistent".into());
+        assert_eq!(shell.run_native("'../my app'"), 0);
+        let plan = shell.prepare_native_agent_command("'../my app'").unwrap();
+        fs::copy("/usr/bin/false", &target).unwrap();
+        assert!(matches!(
+            shell.execute_native_agent_plan(plan, &CancellationToken::default()),
+            Err(NativeExecutionError::NotStarted {
+                reason: NativeNotStartedReason::PlanStale,
+                ..
+            })
+        ));
+        fs::write(&target, "#!/bin/sh\ntouch sentinel\n").unwrap();
+        assert_eq!(shell.run_native("'../my app'"), 126);
+        assert!(!shell.cwd.join("sentinel").exists());
+        for input in ["/usr/bin/env true", "/usr/bin/find . -exec true ';'"] {
+            let plan = shell.prepare_native_agent_command(input).unwrap();
+            assert!(plan.invocations.iter().any(|invocation| {
+                invocation.kind == super::super::CommandTargetKind::DynamicOrUnresolved
+            }));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
