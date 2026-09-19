@@ -2051,11 +2051,19 @@ mod tests {
 
     #[test]
     fn native_agent_requires_authorization_and_reports_real_side_effects() {
-        for program in ["touch", "./touch", "/usr/bin/touch"] {
+        for program in ["touch", "./touch", "/usr/bin/touch", "./script"] {
             for approved in [false, true] {
                 let root = temporary_directory("native-authorized");
                 let mut shell = test_shell();
                 fs::copy("/usr/bin/touch", root.join("touch")).unwrap();
+                use std::os::unix::fs::PermissionsExt;
+                fs::write(
+                    root.join("script"),
+                    "#!/bin/sh\nexec /usr/bin/touch \"$@\"\n",
+                )
+                .unwrap();
+                fs::set_permissions(root.join("script"), fs::Permissions::from_mode(0o700))
+                    .unwrap();
                 shell.cwd = root.clone();
                 shell.env.insert("PATH".into(), "/usr/bin:/bin".into());
                 let agent = native_completion(vec![

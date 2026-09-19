@@ -57,6 +57,7 @@ pub(crate) struct PathComponentIdentity {
 /// Agent 对一个外部程序名的解析结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentResolvedExecutable {
+    native_lookup: bool,
     pub(crate) resolved_path: PathBuf,
     pub(crate) canonical_path: PathBuf,
     pub(crate) resolved_identity: FileIdentity,
@@ -144,17 +145,18 @@ pub(crate) fn resolve_agent_executable(
         &session.env,
         0,
         true,
+        false,
     )
 }
 
-/// Native 绑定只读取窄环境，不解释 shebang 或会话语言状态。
+/// Native 使用有效身份查找；解释器观察仅用于安全绑定，失败不阻止内核执行。
 pub(crate) fn resolve_native_executable(
     cwd: &Path,
     path: Option<&str>,
     name: &str,
     environment: &std::collections::HashMap<String, String>,
 ) -> Option<AgentResolvedExecutable> {
-    resolve_agent_executable_from(cwd, path, name, environment, 0, false)
+    resolve_agent_executable_from(cwd, path, name, environment, 0, true, true)
 }
 
 fn resolve_agent_executable_from(
@@ -164,9 +166,13 @@ fn resolve_agent_executable_from(
     environment: &std::collections::HashMap<String, String>,
     depth: usize,
     inspect_interpreters: bool,
+    native_lookup: bool,
 ) -> Option<AgentResolvedExecutable> {
-    let (resolved_path, path_index, stable_path_entry) =
-        first_executable_path(cwd, path_value, name)?;
+    let (resolved_path, path_index, stable_path_entry) = if native_lookup {
+        first_native_executable_path(cwd, path_value, name).ok()?
+    } else {
+        first_executable_path(cwd, path_value, name)?
+    };
     let resolved_path = if resolved_path.is_absolute() {
         resolved_path
     } else {
@@ -214,6 +220,7 @@ fn resolve_agent_executable_from(
                     environment,
                     depth + 1,
                     true,
+                    native_lookup,
                 ) else {
                     binding = ExecutableBinding::Untrusted;
                     binding_reason = Some(format!("无法绑定脚本解释器 {target}"));
@@ -247,6 +254,7 @@ fn resolve_agent_executable_from(
         }
     }
     Some(AgentResolvedExecutable {
+        native_lookup,
         resolved_path,
         canonical_path,
         resolved_identity,
@@ -291,6 +299,74 @@ pub(crate) fn first_executable_path(
     None
 }
 
+/// Native 查找保留失败原因；有效身份权限决定 PATH 候选，而非任意执行位。
+/// 默认 Bash 过渡解析仍使用原来的 first_executable_path。
+pub(crate) fn first_native_executable_path(
+    cwd: &Path,
+    path_value: Option<&str>,
+    name: &str,
+) -> std::io::Result<(PathBuf, Option<usize>, bool)> {
+    fn executable(path: &Path) -> std::io::Result<()> {
+        let metadata = fs::metadata(path)?;
+        if metadata.is_dir() {
+            return Err(std::io::Error::from_raw_os_error(libc::EISDIR));
+        }
+        if !metadata.is_file() {
+            return Err(std::io::Error::from_raw_os_error(libc::EACCES));
+        }
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let path = CString::new(path.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+            // SAFETY: path 在调用期间有效；AT_EACCESS 使用有效身份并考虑 ACL。
+            if unsafe {
+                libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS)
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+    if name.contains('/') {
+        let path = Path::new(name);
+        let path = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            cwd.join(path)
+        };
+        executable(&path)?;
+        return Ok((path, None, true));
+    }
+    let mut denied = None;
+    for (index, entry) in path_value.unwrap_or("").split(':').enumerate() {
+        let directory = Path::new(entry);
+        let stable = !entry.is_empty() && directory.is_absolute();
+        let directory = if directory.is_absolute() {
+            directory.to_owned()
+        } else {
+            cwd.join(directory)
+        };
+        let candidate = directory.join(name);
+        match executable(&candidate) {
+            Ok(()) => return Ok((candidate, Some(index), stable)),
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::ENOENT | libc::ENOTDIR | libc::EISDIR)
+                ) => {}
+            Err(error) => {
+                if denied.is_none() {
+                    denied = Some(error);
+                }
+            }
+        }
+    }
+    Err(denied.unwrap_or_else(|| std::io::Error::from_raw_os_error(libc::ENOENT)))
+}
+
 pub(crate) fn resolution_matches(
     cwd: &Path,
     path_value: Option<&OsStr>,
@@ -305,18 +381,25 @@ pub(crate) fn resolution_matches(
         },
         None => None,
     };
-    resolve_agent_executable_from(cwd, path_value, name, environment, 0, true).is_some_and(
-        |current| {
-            current.resolved_path == expected.resolved_path
-                && current.canonical_path == expected.canonical_path
-                && current.resolved_identity == expected.resolved_identity
-                && current.identity == expected.identity
-                && current.path_index == expected.path_index
-                && current.binding == expected.binding
-                && current.path_components == expected.path_components
-                && current.interpreters == expected.interpreters
-        },
+    resolve_agent_executable_from(
+        cwd,
+        path_value,
+        name,
+        environment,
+        0,
+        true,
+        expected.native_lookup,
     )
+    .is_some_and(|current| {
+        current.resolved_path == expected.resolved_path
+            && current.canonical_path == expected.canonical_path
+            && current.resolved_identity == expected.resolved_identity
+            && current.identity == expected.identity
+            && current.path_index == expected.path_index
+            && current.binding == expected.binding
+            && current.path_components == expected.path_components
+            && current.interpreters == expected.interpreters
+    })
 }
 
 /// 判断计划中的外部目标是否仍是准备时验证的同一文件。

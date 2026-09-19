@@ -1,84 +1,19 @@
-//! Native 的 ELF 验证与直接进程执行。所有入口均不接收 SessionState。
+//! Native 的内核直接进程执行。所有入口均不接收 SessionState。
 
-use super::super::native::{NativeExecutionError, NativeNotStartedReason, NativePreparationError};
+use super::super::native::{NativeExecutionError, NativeNotStartedReason};
 use super::{
     captured, interactive, BashExecutor, CapturedExecution, OutputMode, AGENT_COMMAND_OUTPUT_LIMIT,
 };
 use crate::common::{AppError, CancellationToken};
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr, OsString};
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub(in super::super) struct ExternalEnvironment<'a> {
     pub(in super::super) cwd: &'a Path,
     pub(in super::super) exported: &'a HashMap<String, String>,
-}
-
-pub(in super::super) fn validate_native_binary(path: &Path) -> Result<(), NativePreparationError> {
-    #[cfg(not(target_os = "linux"))]
-    return Err(NativePreparationError::UnsupportedFormat(
-        "当前平台尚不支持 Native 二进制执行".into(),
-    ));
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(path)
-            .map_err(|e| NativePreparationError::ReadFailed(e.to_string()))?;
-        if !file
-            .metadata()
-            .map_err(|e| NativePreparationError::ReadFailed(e.to_string()))?
-            .is_file()
-        {
-            return Err(NativePreparationError::UnsupportedFormat(
-                "Native 目标不是普通文件".into(),
-            ));
-        }
-        let mut bytes = Vec::with_capacity(64);
-        file.by_ref()
-            .take(64)
-            .read_to_end(&mut bytes)
-            .map_err(|e| NativePreparationError::ReadFailed(e.to_string()))?;
-        if !valid_elf_header(&bytes) {
-            return Err(NativePreparationError::UnsupportedFormat(
-                "Native 本期仅执行 ELF 二进制，不支持脚本或该文件格式".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-fn valid_elf_header(b: &[u8]) -> bool {
-    if b.len() < 16 || &b[..4] != b"\x7fELF" || !matches!(b[5], 1 | 2) || b[6] != 1 {
-        return false;
-    }
-    let (length, offset) = match b[4] {
-        1 => (52, 40),
-        2 => (64, 52),
-        _ => return false,
-    };
-    if b.len() < length {
-        return false;
-    }
-    let u16_at = |i| {
-        if b[5] == 1 {
-            u16::from_le_bytes([b[i], b[i + 1]])
-        } else {
-            u16::from_be_bytes([b[i], b[i + 1]])
-        }
-    };
-    let version = [b[20], b[21], b[22], b[23]];
-    matches!(u16_at(16), 2 | 3)
-        && u16_at(offset) == length as u16
-        && (if b[5] == 1 {
-            u32::from_le_bytes(version)
-        } else {
-            u32::from_be_bytes(version)
-        }) == 1
 }
 
 #[cfg(target_os = "linux")]
@@ -202,6 +137,12 @@ fn command(
 }
 
 fn spawn_error(error: io::Error) -> NativeExecutionError {
+    if error.raw_os_error() == Some(libc::ENOENT) {
+        return NativeExecutionError::not_started(
+            NativeNotStartedReason::ExecutableNotFound,
+            format!("Native 程序或其加载解释器不存在: {error}"),
+        );
+    }
     if matches!(
         error.raw_os_error(),
         Some(
@@ -330,8 +271,7 @@ mod tests {
         ] {
             std::fs::write(&path, bytes).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-            assert!(validate_native_binary(&path).is_err());
-            // Bypass the format guard to prove the actual spawn primitive does not invoke sh.
+            // The actual spawn primitive must not interpret ENOEXEC text as Shell input.
             let error = command(
                 ExternalEnvironment {
                     cwd: &root,
@@ -381,41 +321,5 @@ mod tests {
             spawn_error(io::Error::from_raw_os_error(libc::EIO)),
             NativeExecutionError::Execution(_)
         ));
-    }
-
-    #[test]
-    fn native_elf_header_is_bounded_and_checks_class_endianness_type_and_size() {
-        for class in [1, 2] {
-            for endian in [1, 2] {
-                let (length, offset) = if class == 1 { (52, 40) } else { (64, 52) };
-                let mut b = vec![0; length];
-                b[..4].copy_from_slice(b"\x7fELF");
-                b[4] = class;
-                b[5] = endian;
-                b[6] = 1;
-                let ty = if endian == 1 {
-                    3_u16.to_le_bytes()
-                } else {
-                    3_u16.to_be_bytes()
-                };
-                let version = if endian == 1 {
-                    1_u32.to_le_bytes()
-                } else {
-                    1_u32.to_be_bytes()
-                };
-                let size = if endian == 1 {
-                    (length as u16).to_le_bytes()
-                } else {
-                    (length as u16).to_be_bytes()
-                };
-                b[16..18].copy_from_slice(&ty);
-                b[20..24].copy_from_slice(&version);
-                b[offset..offset + 2].copy_from_slice(&size);
-                assert!(valid_elf_header(&b));
-                assert!(!valid_elf_header(&b[..length - 1]));
-                b[16..18].fill(0);
-                assert!(!valid_elf_header(&b));
-            }
-        }
     }
 }

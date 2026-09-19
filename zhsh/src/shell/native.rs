@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 pub(crate) enum NativePreparationError {
     InvalidInput(String),
     NotFound,
-    UnsupportedFormat(String),
+    CannotExecute(String),
     ReadFailed(String),
 }
 impl NativePreparationError {
@@ -24,7 +24,7 @@ impl NativePreparationError {
         match self {
             Self::InvalidInput(_) => 2,
             Self::NotFound => 127,
-            Self::UnsupportedFormat(_) => 126,
+            Self::CannotExecute(_) => 126,
             Self::ReadFailed(_) => 1,
         }
     }
@@ -35,9 +35,7 @@ impl NativePreparationError {
 impl std::fmt::Display for NativePreparationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidInput(s) | Self::UnsupportedFormat(s) | Self::ReadFailed(s) => {
-                f.write_str(s)
-            }
+            Self::InvalidInput(s) | Self::CannotExecute(s) | Self::ReadFailed(s) => f.write_str(s),
             Self::NotFound => f.write_str("Native 未找到可执行程序"),
         }
     }
@@ -47,8 +45,10 @@ impl std::fmt::Display for NativePreparationError {
 pub(crate) enum NativeNotStartedReason {
     PlanStale,
     InvalidRequest,
+    #[cfg(not(target_os = "linux"))]
     UnsupportedFormat,
     SpawnFailed,
+    ExecutableNotFound,
 }
 #[derive(Debug)]
 pub(crate) enum NativeExecutionError {
@@ -66,7 +66,15 @@ impl NativeExecutionError {
         }
     }
     fn code(&self) -> i32 {
-        if matches!(self, Self::NotStarted { .. }) {
+        if matches!(
+            self,
+            Self::NotStarted {
+                reason: NativeNotStartedReason::ExecutableNotFound,
+                ..
+            }
+        ) {
+            127
+        } else if matches!(self, Self::NotStarted { .. }) {
             126
         } else {
             1
@@ -106,9 +114,14 @@ fn prepare(
         return Ok(None);
     };
     let path = environment.get("PATH").map(String::as_str);
-    let (selected, _, _) = resolver::first_executable_path(cwd, path, program)
-        .ok_or(NativePreparationError::NotFound)?;
-    execution::validate_native_binary(&selected)?;
+    let (selected, _, _) =
+        resolver::first_native_executable_path(cwd, path, program).map_err(|error| {
+            if error.raw_os_error() == Some(libc::ENOENT) {
+                NativePreparationError::NotFound
+            } else {
+                NativePreparationError::CannotExecute(format!("{program}: {error}"))
+            }
+        })?;
     let target = resolver::resolve_native_executable(cwd, path, program, environment)
         .ok_or_else(|| NativePreparationError::ReadFailed("无法绑定 Native 执行目标身份".into()))?;
     if target.resolved_path != selected {
@@ -247,12 +260,6 @@ impl Shell {
                 "Native 计划已失效（PlanStale），请重新准备并确认",
             ));
         }
-        execution::validate_native_binary(path).map_err(|error| {
-            NativeExecutionError::not_started(
-                NativeNotStartedReason::UnsupportedFormat,
-                error.to_string(),
-            )
-        })?;
         Ok((path, &invocation.original, arguments))
     }
 
@@ -407,7 +414,7 @@ mod tests {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     #[test]
-    fn native_resolves_session_path_and_rejects_stale_or_script_targets() {
+    fn native_resolves_session_path_and_rejects_stale_or_invalid_targets() {
         let root = std::env::temp_dir().join(format!(
             "zhsh-native-bind-{}-{}",
             std::process::id(),
@@ -436,15 +443,8 @@ mod tests {
                 ..
             })
         ));
-        fs::write(
-            root.join("a/probe"),
-            "#!/bin/sh\nprintf unsafe > sentinel\n",
-        )
-        .unwrap();
-        assert!(matches!(
-            shell.prepare_native_agent_command("probe"),
-            Err(NativePreparationError::UnsupportedFormat(_))
-        ));
+        fs::write(root.join("a/probe"), "printf unsafe > sentinel\n").unwrap();
+        assert!(shell.prepare_native_agent_command("probe").is_ok());
         assert_eq!(shell.run_native("probe"), 126);
         assert!(!root.join("sentinel").exists());
         fs::remove_file(root.join("a/probe")).unwrap();
@@ -461,13 +461,13 @@ mod tests {
         fs::copy("/usr/bin/true", root.join("probe")).unwrap();
         assert_eq!(shell.run_native("probe"), 0);
         fs::set_permissions(root.join("probe"), fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(shell.run_native("probe"), 127);
-        assert_eq!(shell.run_native(" \t "), 127);
+        assert_eq!(shell.run_native("probe"), 126);
+        assert_eq!(shell.run_native(" \t "), 126);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn native_explicit_paths_keep_identity_format_and_downstream_checks() {
+    fn native_explicit_paths_keep_identity_and_downstream_checks() {
         let root = std::env::temp_dir().join(format!("zhsh-native-paths-{}", std::process::id()));
         fs::create_dir_all(root.join("child")).unwrap();
         let target = root.join("my app");
@@ -485,7 +485,7 @@ mod tests {
                 ..
             })
         ));
-        fs::write(&target, "#!/bin/sh\ntouch sentinel\n").unwrap();
+        fs::write(&target, "touch sentinel\n").unwrap();
         assert_eq!(shell.run_native("'../my app'"), 126);
         assert!(!shell.cwd.join("sentinel").exists());
         for input in ["/usr/bin/env true", "/usr/bin/find . -exec true ';'"] {

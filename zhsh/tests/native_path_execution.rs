@@ -5,6 +5,91 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 #[test]
+fn native_lookup_matches_bash_permissions_and_failure_status() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("zhsh-native-permissions-{}", std::process::id()));
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::create_dir_all(root.join("b")).unwrap();
+    fs::create_dir_all(root.join("directory")).unwrap();
+    for (name, mode) in [
+        ("noexec", 0o600),
+        ("execonly", 0o100),
+        ("a/probe", 0o401),
+        ("b/probe", 0o700),
+    ] {
+        fs::copy("/usr/bin/true", root.join(name)).unwrap();
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(mode)).unwrap();
+    }
+    for (name, contents) in [
+        ("script", "#!/bin/sh\nexit 7\n"),
+        (
+            "missing-interpreter",
+            "#!/nonexistent/zhsh-interpreter\nexit 0\n",
+        ),
+        ("bad", "\x7fELFbroken"),
+    ] {
+        fs::write(root.join(name), contents).unwrap();
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let search = format!(
+        "{}:{}:{}",
+        root.join("a").display(),
+        root.join("b").display(),
+        root.display()
+    );
+    for (input, expected) in [
+        ("./execonly", 0),
+        ("./script", 7),
+        ("./missing-interpreter", 127),
+        ("./bad", 126),
+        ("./noexec", 126),
+        ("noexec", 126),
+        ("./directory", 126),
+        ("./missing", 127),
+        ("probe", 0),
+    ] {
+        // Root can execute any file with an execute bit; the PATH skip case requires a normal user.
+        if input == "probe" && unsafe { libc::geteuid() } == 0 {
+            continue;
+        }
+        for native in [false, true] {
+            let mut command = if native {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_zhsh"));
+                command.arg("--native");
+                command
+            } else {
+                let mut command = Command::new("/bin/bash");
+                command.args(["--noprofile", "--norc", "-c", input]);
+                command
+            };
+            let mut child = command
+                .env_clear()
+                .env("HOME", &root)
+                .env("PATH", &search)
+                .env("LC_ALL", "C")
+                .env("ZHSH_TEST_SYSTEM_CODEC_DIR", root.join("no-codecs"))
+                .current_dir(&root)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            if native {
+                writeln!(child.stdin.take().unwrap(), "{input}").unwrap();
+            }
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(expected),
+                "native={native}, input={input}, {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn native_cli_executes_a_real_binary_with_literal_arguments_and_environment() {
     let root = std::env::temp_dir().join(format!(
         "zhsh-native-cli-{}-{}",
