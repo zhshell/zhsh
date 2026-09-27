@@ -48,7 +48,7 @@ use crate::llm::{self, CodecRuntime, ModelTier};
 use std::path::Path;
 use std::sync::Arc;
 
-const STATUS_HELP: &str = "zh status：显示当前 LLM、Codec、传输和 Agent 授信状态。\n\n用法：zh status\n\n该命令只读取当前会话状态。\n详细说明：man zhsh\n";
+const STATUS_HELP: &str = "zh status：显示当前 LLM、Codec、传输和 Agent 授信状态。\n\n用法：zh status\n\n该命令只读取当前会话状态。\n授信字段显示当前有效的 balanced、confirm 或 trusted；运行 `zh trust -h` 查看各等级的自动执行和确认条件。\n详细说明：man zhsh\n";
 const LS_HELP: &str = "zh ls：列出已保存的 LLM 配置。\n\n用法：zh ls\n\n一行输出一个配置名；空输出表示没有持久化配置。\n详细说明：man zhsh\n";
 const USE_HELP: &str = "zh use：选择一个已保存的 LLM 配置。\n\n用法：zh use <配置名>\n\n完整配置会立即启用；不完整配置可进入修复，或仅设为活动配置并保持 Agent 不可用。普通 Shell 不受影响。\n详细说明：man zhsh\n";
 const TIER_HELP: &str = "zh tier：切换当前 LLM 配置的模型档位。\n\n用法：zh tier <flash|standard|max>\n\n成功后会写入当前配置文件，并切换当前会话使用的模型。\n详细说明：man zhsh\n";
@@ -127,7 +127,7 @@ fn set_tier(
 
 fn help() -> BuiltinResult {
     BuiltinResult::stdout(
-        "zh：管理 zhsh 自身状态。\n\n用法：zh [COMMAND]\n\n命令：\n  status  显示当前 LLM、Codec、传输和 Agent 授信状态\n  ls      列出已保存的 LLM 配置\n  use     启用一个 LLM 配置\n  llm     创建或修改 LLM 配置\n  tier    切换当前模型档位\n  trust   查看或修改 Agent 授信等级\n  safety  查看、校验、安装或重载 Safety 规则\n  codec   查看、校验、安装、卸载、导出或重载 Codec\n  help    显示本帮助\n\n运行 `zh <COMMAND> -h` 查看具体说明，或运行 `man zhsh` 查看完整手册。\n",
+        "zh：管理 zhsh 自身状态。\n\n用法：zh [COMMAND]\n\n命令：\n  status  显示当前 LLM、Codec、传输和 Agent 授信状态\n  ls      列出已保存的 LLM 配置\n  use     启用一个 LLM 配置\n  llm     创建或修改 LLM 配置\n  tier    切换当前模型档位\n  trust   查看或修改 Agent 授信等级\n  safety  查看、校验、安装或重载 Safety 规则\n  codec   查看、校验、安装、卸载、导出或重载 Codec\n  help    显示本帮助\n\nAgent 授信：\n  balanced  默认自动执行可信只读命令\n  confirm   逐条确认所有可执行 Agent 命令\n  trusted   额外自动执行核心规则识别、写目标全部位于任务根内的普通修改\n任务根固定为任务开始时的规范化工作目录；trusted 仍确认会话修改、破坏性操作、网络/提权和敏感披露。\n当前模式不支持的语法、脱离监督或无静态终止条件的执行仍拒绝。\n运行 `zh trust -h` 查看等级摘要与示例。\n\n运行 `zh <COMMAND> -h` 查看具体说明，或运行 `man zhsh` 查看完整手册。\n",
     )
 }
 

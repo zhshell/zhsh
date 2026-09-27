@@ -56,7 +56,7 @@ pub(crate) fn execute(
         }
         output.push_str(
             "\n运行 `help <名称>` 查看具体用法。\n\
-             运行 `zh help` 查看 zhsh 管理命令，或运行 `man zhsh` 查看完整手册。\n",
+             运行 `zh help` 查看 zhsh 管理命令，或运行 `man zhsh` 查看完整手册。\nAgent 授信：balanced 自动执行可信只读命令；confirm 逐条确认；trusted 额外自动执行核心规则识别的任务根内普通修改。\ntrusted 仍确认会话修改、破坏性操作、网络/提权和敏感披露；不支持的执行形式仍拒绝。\n运行 `zh trust -h` 查看等级摘要与代表性案例。\n",
         );
         return BuiltinResult::stdout(output);
     }

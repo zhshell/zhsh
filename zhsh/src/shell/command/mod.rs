@@ -395,7 +395,7 @@ const COMMANDS: &[CommandSpec] = &[
         takes_arguments: true,
         usage: "zh [status|ls|use|llm|tier|trust|safety|codec|help]",
         summary: "管理 zhsh 的 LLM、Codec、授信与 Safety 状态",
-        details: "运行 `zh help` 查看管理子命令，或运行 `man zhsh` 查看完整手册。",
+        details: "运行 `zh help` 查看管理子命令，或运行 `man zhsh` 查看完整手册。\nAgent 授信：balanced 自动执行可信只读命令；confirm 逐条确认；trusted 额外自动执行核心规则识别的任务根内普通修改。\ntrusted 仍确认会话修改、破坏性操作、网络/提权和敏感披露；不支持的执行形式仍拒绝。\n运行 `zh trust -h` 查看等级摘要与代表性案例。",
     },
 ];
 

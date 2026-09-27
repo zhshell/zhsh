@@ -4,7 +4,13 @@
 //! `zh trust [-w] [balanced|confirm|trusted]`；`zh trust help|-h|--help`。无参数查询当前等级。
 //!
 //! # 参数与选项
-//! balanced 为默认可信只读策略，confirm 要求确认，trusted 仍保留强制确认边界。
+//! balanced 默认只自动执行静态可信、有限前台、披露受限且无会话修改或文件输出的只读命令。
+//! confirm 确认所有可执行 Agent 命令。trusted 额外自动执行内置 Linux 核心规则判为
+//! state_changing、所有写目标可确定且位于任务根内的操作，如满足条件的 touch/mkdir。
+//! 自动执行仍要求目标身份可信、无网络或提权、无运维/敏感披露及其他强制确认信号。
+//! 任务根是任务开始时固定的规范化工作目录，不随 cd 或任务文字中提到的路径扩大。
+//! 未知行为、被判为破坏性的操作、范围外修改、应用规则报告的修改和会话修改仍需确认。
+//! 不支持语法、脱离监督或没有静态终止条件的执行直接拒绝。
 //! -w 最多一次，写入启动时确定的用户目录中的 .zhshrc；仅 -w 时持久化当前等级。
 //! 等级只能给一个，帮助标志必须单独使用。
 //!
@@ -28,7 +34,28 @@
 use super::super::super::{trust, AgentTrust, SessionState};
 use super::super::BuiltinResult;
 
-const HELP: &str = "Agent 授信：查看或修改 Agent 命令的确认策略。\n\n用法：zh trust [-w] [balanced|confirm|trusted]\n\n等级：\n  balanced  默认策略，只自动执行满足可信只读条件的命令\n  confirm   所有可执行 Agent 命令都需要确认\n  trusted   额外放行受限的任务范围内普通修改，不绕过强制确认边界\n\n选项：\n  -w  同时写入 ~/.zhshrc；省略时只影响当前会话\n\nSafety 分类不是安全证明，用户直接输入的 Shell 命令不经过该策略。\n详细说明：man zhsh\n";
+const HELP: &str = "Agent 授信：设置 Agent 命令的确认策略。
+
+用法：zh trust [-w] [balanced|confirm|trusted]
+
+等级（从严格到宽松）：
+  confirm   所有可执行命令逐条确认
+  balanced  默认，符合条件的只读命令自动执行
+  trusted   更宽松，额外允许核心规则识别的任务根内普通修改自动执行
+
+典型案例（自动执行均须通过 Safety 评估）：
+  pwd           balanced/trusted 自动执行；confirm 确认
+  touch ./note  任务根内符合条件时 trusted 自动执行；其余等级确认
+  cd /path（Native）、rm ./note  所有等级均需确认
+
+任务根是任务开始时的工作目录；不会随 cd 或任务描述扩大。
+trusted 仍保留网络、提权、敏感访问等确认；不支持的执行形式各等级均拒绝。
+
+无参数查询；指定等级仅修改当前会话，-w 同时保存到 ~/.zhshrc。
+示例：zh trust trusted；zh trust -w balanced。
+
+仅作用于 Agent 命令。完整条件、模式限制和持久化细节：man zhsh
+";
 
 /// 默认只修改当前会话；`-w` 先原子更新 `~/.zhshrc`，成功后再提交会话值。
 pub(crate) fn execute(shell: &mut SessionState, args: &[String]) -> BuiltinResult {
