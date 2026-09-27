@@ -1,7 +1,38 @@
-//! `zh codec`：检查、安装、卸载、列出、导出和重载已签名 Codec。
+//! `zh codec`：管理签名 Codec 的校验、安装、卸载、导出与加载。
+//!
+//! # 用法
+//! `zh codec`（显示帮助）；`zh codec ls`；`zh codec -t [--] FILE.zhcodec`；
+//! `zh codec install [--] FILE.zhcodec`；`zh codec uninstall [--] FORMAT`；
+//! `zh codec export [FORMAT] [-o|--output-dir DIR]`；`zh codec reload`。
+//! 顶层及各操作支持原有 help/-h/--help 形式。
+//!
+//! # 参数与选项
+//! FORMAT 是精确 id@version；-t 只校验，不安装或授权发布者。
+//! install 安装已签名制品；uninstall 只删除用户安装的精确 FORMAT。
+//! export 省略 FORMAT 时使用活动 Codec，省略目录时使用 cwd；仅导出允许的用户 Codec，不覆盖不同内容文件。
+//! reload 接纳受管目录手动修改；正常安装立即加载，无须追加 reload。
+//!
+//! # 模式与上下文
+//! 默认模式与 Native 使用相同 CodecLifecycleService 和运行时快照；操作依赖 CodecRuntime。
+//! 首次第三方发布者信任及活动 Codec 卸载保留原 UI 确认条件。
+//!
+//! # 示例
+//! ```sh
+//! zh codec ls
+//! ```
+//! 查看当前 generation 中的 Codec、发布者及安装来源，不安装文件。
+//!
+//! # 输出与退出状态
+//! 列表、帮助、校验和变更回执写 stdout；错误/相关警告保持原输出流。
+//! 成功通常 0，参数/运行时/服务错误为 1；卸载取消为 0 并报告未删除，安装错误包括取消仍走原失败结果。
+//!
+//! # 状态影响
+//! 安装/卸载会更新原受管文件、revision/generation 和活动解析状态，不自动替用户选定新 FORMAT；卸载保留配置和发布者信任。
+//! 导出写指定目录，reload 更新当前快照。默认 Agent 不直接调用；Native 保留原 Safety/确认。
+//! 委托模式 builtin 管道源拒绝 install/export/reload；uninstall 保留原路由及缺少确认 UI 时的既有约束。
 
-use super::super::SessionState;
-use super::BuiltinResult;
+use super::super::super::SessionState;
+use super::super::BuiltinResult;
 use crate::application::{
     ActiveLlmResolution, CodecInstallRequest, CodecLifecycleService, CodecManagementUi,
     CodecTrustView, PluginInstallOutcome,
@@ -102,7 +133,7 @@ fn single_source(args: &[String]) -> Option<&str> {
 }
 
 fn inspect(shell: &SessionState, service: &CodecLifecycleService, source: &str) -> BuiltinResult {
-    let source = match super::plugin_path::resolve_source(shell, source) {
+    let source = match super::support::plugin_path::resolve_source(shell, source) {
         Ok(source) => source,
         Err(error) => return BuiltinResult::error(format!("zh codec -t: {error}\n")),
     };
@@ -175,7 +206,7 @@ fn install(
     source: &str,
     ui: Option<&dyn CodecManagementUi>,
 ) -> BuiltinResult {
-    let source = match super::plugin_path::resolve_source(shell, source) {
+    let source = match super::support::plugin_path::resolve_source(shell, source) {
         Ok(source) => source,
         Err(error) => return BuiltinResult::error(format!("zh codec install: {error}\n")),
     };
@@ -282,7 +313,7 @@ fn list(shell: &SessionState, service: &CodecLifecycleService) -> BuiltinResult 
                     ]
                 })
                 .collect();
-            let mut output = super::table::render(
+            let mut output = super::support::table::render(
                 [
                     "FORMAT",
                     "PUBLISHER",
@@ -366,7 +397,7 @@ fn export(shell: &SessionState, service: &CodecLifecycleService, args: &[String]
     };
     let require_owned_output = output_dir.is_some();
     let output_dir = match output_dir {
-        Some(path) => match super::plugin_path::resolve_source(shell, path) {
+        Some(path) => match super::support::plugin_path::resolve_source(shell, path) {
             Ok(path) => path,
             Err(error) => return BuiltinResult::error(format!("zh codec export: {error}\n")),
         },

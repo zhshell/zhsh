@@ -14,6 +14,9 @@ pub(crate) use resolver::{ExecutableBinding, FileIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentCommandPlan {
+    pub(crate) pid_bindings: Vec<super::job::PidBinding>,
+    pub(crate) job_selection: Option<Vec<super::job::Binding>>,
+    pub(crate) job_bindings: Vec<(String, super::job::Binding)>,
     pub(crate) original: String,
     pub(crate) executable: AgentExecutionTarget,
     pub(crate) cwd: PathBuf,
@@ -97,6 +100,9 @@ impl AgentCommandPlan {
         path_snapshot: Option<OsString>,
     ) -> Self {
         Self {
+            job_bindings: Vec::new(),
+            job_selection: None,
+            pid_bindings: Vec::new(),
             original,
             executable: AgentExecutionTarget::ZhshBuiltin {
                 name: name.clone(),
@@ -140,6 +146,9 @@ impl AgentCommandPlan {
             ));
         }
         Self {
+            job_bindings: Vec::new(),
+            job_selection: None,
+            pid_bindings: Vec::new(),
             original: prepared.original,
             executable: AgentExecutionTarget::External {
                 path: prepared.target.resolved_path,
@@ -166,6 +175,9 @@ impl AgentCommandPlan {
                             .then(|| UnsupportedExecution::ProtectedBuiltin { name: name.clone() })
                     });
                     return Self {
+                        job_bindings: Vec::new(),
+                        job_selection: None,
+                        pid_bindings: Vec::new(),
                         original: original.clone(),
                         executable: AgentExecutionTarget::ZhshBuiltin {
                             name: name.clone(),
@@ -200,6 +212,9 @@ impl AgentCommandPlan {
         };
         let Some((name, arguments)) = words.split_first() else {
             return Self {
+                job_bindings: Vec::new(),
+                job_selection: None,
+                pid_bindings: Vec::new(),
                 original,
                 executable: AgentExecutionTarget::Bash { script },
                 cwd,
@@ -262,6 +277,9 @@ impl AgentCommandPlan {
         {
             if let Ok((expression, invocations)) = agent_compound::bind(session, &script) {
                 return Self {
+                    job_bindings: Vec::new(),
+                    job_selection: None,
+                    pid_bindings: Vec::new(),
                     original,
                     executable: AgentExecutionTarget::BoundCompound { expression },
                     cwd,
@@ -301,6 +319,9 @@ impl AgentCommandPlan {
         };
         let invocation = ResolvedInvocation::external(name.clone(), &external);
         Self {
+            job_bindings: Vec::new(),
+            job_selection: None,
+            pid_bindings: Vec::new(),
             original,
             executable: AgentExecutionTarget::External {
                 path: external.canonical_path,
@@ -324,6 +345,9 @@ impl AgentCommandPlan {
         unsupported_execution: Option<UnsupportedExecution>,
     ) -> Self {
         Self {
+            job_bindings: Vec::new(),
+            job_selection: None,
+            pid_bindings: Vec::new(),
             original,
             executable: AgentExecutionTarget::Bash { script },
             cwd,
@@ -344,6 +368,9 @@ impl AgentCommandPlan {
     ) -> Self {
         match agent_compound::bind(session, &script) {
             Ok((expression, invocations)) => Self {
+                job_bindings: Vec::new(),
+                job_selection: None,
+                pid_bindings: Vec::new(),
                 original,
                 executable: AgentExecutionTarget::BoundCompound { expression },
                 cwd,

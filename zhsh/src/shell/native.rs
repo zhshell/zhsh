@@ -5,7 +5,7 @@ use super::command::{self, args, resolver};
 use super::{CommandTermination, OutputEvidence};
 
 mod source;
-use super::executor::native::{self as execution, ExternalEnvironment};
+use super::executor::native as execution;
 use super::{AgentCommandPlan, AgentExecutionTarget, CapturedExecution, Shell};
 use crate::common::{AppError, CancellationToken};
 use std::collections::HashMap;
@@ -18,6 +18,7 @@ pub(crate) enum NativePreparationError {
     NotFound,
     CannotExecute(String),
     ReadFailed(String),
+    JobTarget(String),
 }
 impl NativePreparationError {
     pub(crate) fn code(&self) -> i32 {
@@ -25,7 +26,7 @@ impl NativePreparationError {
             Self::InvalidInput(_) => 2,
             Self::NotFound => 127,
             Self::CannotExecute(_) => 126,
-            Self::ReadFailed(_) => 1,
+            Self::ReadFailed(_) | Self::JobTarget(_) => 1,
         }
     }
     pub(crate) fn is_failure(&self) -> bool {
@@ -35,7 +36,10 @@ impl NativePreparationError {
 impl std::fmt::Display for NativePreparationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidInput(s) | Self::CannotExecute(s) | Self::ReadFailed(s) => f.write_str(s),
+            Self::InvalidInput(s)
+            | Self::CannotExecute(s)
+            | Self::ReadFailed(s)
+            | Self::JobTarget(s) => f.write_str(s),
             Self::NotFound => f.write_str("Native 未找到可执行程序"),
         }
     }
@@ -110,6 +114,14 @@ fn prepare(
             args::ParseError::Syntax(message) => message.into(),
         })
     })?;
+    prepare_words(original, &words, cwd, environment)
+}
+fn prepare_words(
+    original: String,
+    words: &[String],
+    cwd: &Path,
+    environment: &HashMap<String, String>,
+) -> Result<Option<PreparedNativeExternal>, NativePreparationError> {
     let Some((program, arguments)) = words.split_first() else {
         return Ok(None);
     };
@@ -140,6 +152,46 @@ fn prepare(
 }
 
 impl Shell {
+    pub(crate) fn native_interrupt() {
+        super::job::interrupt();
+    }
+    pub(crate) fn enable_native_jobs(&mut self, interactive: bool) {
+        self.native_mode = true;
+        self.native_jobs
+            .get_or_init(|| super::job::JobRuntime::new(interactive));
+    }
+    fn jobs(&self) -> &super::job::JobRuntime {
+        self.native_jobs
+            .get_or_init(|| super::job::JobRuntime::new(false))
+    }
+    pub(crate) fn install_native_job_signals(&self) -> std::io::Result<()> {
+        self.jobs().install_signals()
+    }
+    pub(crate) fn set_native_notice_sink(
+        &self,
+        sink: std::sync::Arc<dyn Fn(String) + Send + Sync>,
+    ) {
+        self.jobs().set_notice_sink(sink);
+    }
+    pub(crate) fn native_job_failure(&self) -> Option<String> {
+        self.native_jobs.get().and_then(|j| j.failure())
+    }
+    pub(crate) fn native_notifications(&self) -> Vec<String> {
+        self.native_jobs
+            .get()
+            .map_or_else(Vec::new, |j| j.notifications())
+    }
+    pub(crate) fn native_eof(&mut self) -> bool {
+        match self.jobs().exit(!self.native_exit_warned, false) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("zhsh: {e}");
+                self.native_exit_warned = true;
+                false
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn run_native(&mut self, input: &str) -> i32 {
         self.run_native_with_history(input, &[])
@@ -149,7 +201,7 @@ impl Shell {
         if input.trim().is_empty() {
             return self.state.last_exit;
         }
-        let plan = match self.prepare_native_agent_command(input) {
+        let plan = match self.prepare_native_command(input, false) {
             Ok(plan) => plan,
             Err(error) => {
                 eprintln!("zhsh: {}", safe_diagnostic(&error.to_string()));
@@ -173,6 +225,13 @@ impl Shell {
         &self,
         input: &str,
     ) -> Result<AgentCommandPlan, NativePreparationError> {
+        self.prepare_native_command(input, true)
+    }
+    fn prepare_native_command(
+        &self,
+        input: &str,
+        bind_jobs: bool,
+    ) -> Result<AgentCommandPlan, NativePreparationError> {
         let original = input.trim();
         let parse_builtin = |text: &str| {
             args::parse_native_builtin_literal(text).map_err(|error| {
@@ -185,27 +244,117 @@ impl Shell {
         let words = parse_builtin(original)?;
         // Preserve the existing builtin-before-alias ordering. Aliases only rewrite the command
         // before preparation, never after authorization, and their bodies obey Native syntax.
-        let expanded = if words.first().is_some_and(|name| command::is_builtin(name)) {
+        let expanded = if words
+            .first()
+            .is_some_and(|name| command::is_native_builtin(name))
+        {
             original.to_owned()
         } else {
             self.state.expand_alias(original)
         };
         let words = parse_builtin(&expanded)?;
+        if words
+            .first()
+            .is_none_or(|name| !command::is_native_builtin(name))
+        {
+            let mut plan = prepare(&expanded, &self.state.cwd, &self.state.env)?
+                .map(AgentCommandPlan::from_native_external)
+                .ok_or_else(|| {
+                    NativePreparationError::InvalidInput("Native command 不能为空".into())
+                })?;
+            plan.original = original.to_owned();
+            return Ok(plan);
+        }
+        self.prepare_native_words(original, &words, 0, bind_jobs)
+    }
+    fn prepare_native_words(
+        &self,
+        original: &str,
+        words: &[String],
+        depth: usize,
+        bind_jobs: bool,
+    ) -> Result<AgentCommandPlan, NativePreparationError> {
+        if depth > 16 {
+            return Err(NativePreparationError::InvalidInput(
+                "jobs -x: nesting limit".into(),
+            ));
+        }
         let Some((name, arguments)) = words.split_first() else {
             return Err(NativePreparationError::InvalidInput(
                 "Native command 不能为空".into(),
             ));
         };
-        if command::is_builtin(name) {
-            return Ok(AgentCommandPlan::from_native_builtin(
+        if name == "jobs" && arguments.first().is_some_and(|a| a == "-x") {
+            if arguments.len() < 2 {
+                return Err(NativePreparationError::InvalidInput(
+                    "jobs -x: command required".into(),
+                ));
+            }
+            let mut inner = arguments[1..].to_vec();
+            let mut bindings = Vec::new();
+            for word in inner.iter_mut().skip(1) {
+                if word.starts_with('%') {
+                    let b = self
+                        .jobs()
+                        .resolve(word)
+                        .map_err(NativePreparationError::InvalidInput)?;
+                    bindings.push((word.clone(), b));
+                    *word = b.pgid.to_string();
+                }
+            }
+            let mut plan = self.prepare_native_words(original, &inner, depth + 1, bind_jobs)?;
+            plan.job_bindings.extend(bindings);
+            return Ok(plan);
+        }
+        if command::is_native_builtin(name) {
+            let mut plan = AgentCommandPlan::from_native_builtin(
                 original.to_owned(),
                 name.clone(),
                 arguments.to_vec(),
                 self.state.cwd.clone(),
                 self.state.env.get("PATH").map(OsString::from),
-            ));
+            );
+            if bind_jobs && command::is_job_builtin(name) && name != "jobs" && name != "disown" {
+                for a in arguments.iter().filter(|a| a.starts_with('%')) {
+                    let b = self
+                        .jobs()
+                        .resolve(a)
+                        .map_err(NativePreparationError::JobTarget)?;
+                    plan.job_bindings.push((a.clone(), b));
+                }
+                if matches!(name.as_str(), "fg" | "bg" | "disown") && arguments.is_empty() {
+                    let b = self
+                        .jobs()
+                        .resolve("%+")
+                        .map_err(NativePreparationError::JobTarget)?;
+                    plan.job_bindings.push(("%+".into(), b));
+                }
+            }
+            if bind_jobs && name == "disown" {
+                let context = super::builtin::JobContext {
+                    runtime: self.jobs(),
+                    bindings: &[],
+                    pids: &[],
+                    selection: None,
+                };
+                let selection = super::builtin::disown::select(&context, arguments)
+                    .map_err(|e| NativePreparationError::JobTarget(e.stderr.trim().to_owned()))?;
+                plan.job_bindings
+                    .extend(selection.iter().map(|b| (format!("%{}", b.id), *b)));
+                plan.job_selection = Some(selection);
+            }
+            if bind_jobs && name == "kill" {
+                for pid in super::builtin::kill::pid_operands(arguments) {
+                    plan.pid_bindings.push(
+                        super::job::PidBinding::open(pid).map_err(|e| {
+                            NativePreparationError::InvalidInput(format!("kill: {e}"))
+                        })?,
+                    );
+                }
+            }
+            return Ok(plan);
         }
-        let mut plan = prepare(&expanded, &self.state.cwd, &self.state.env)?
+        let mut plan = prepare_words(original.to_owned(), words, &self.state.cwd, &self.state.env)?
             .map(AgentCommandPlan::from_native_external)
             .ok_or_else(|| {
                 NativePreparationError::InvalidInput("Native command 不能为空".into())
@@ -226,7 +375,7 @@ impl Shell {
     pub(crate) fn native_agent_plan_requires_terminal(&self, plan: &AgentCommandPlan) -> bool {
         match (&plan.executable, plan.invocations.first()) {
             (AgentExecutionTarget::ZhshBuiltin { name, .. }, _) => {
-                matches!(name.as_str(), "fg" | "zh" | "source" | ".")
+                matches!(name.as_str(), "fg" | "suspend" | "zh" | "source" | ".")
             }
             (AgentExecutionTarget::External { arguments, .. }, Some(invocation)) => {
                 execution::requires_terminal(&invocation.original, arguments)
@@ -291,7 +440,19 @@ impl Shell {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Ok(None);
         }
+        if !matches!(&plan.executable, AgentExecutionTarget::ZhshBuiltin { name, .. } if name == "jobs" || name == "exit")
+        {
+            self.native_exit_warned = false;
+        }
         let result = (|| {
+            if plan.job_bindings.iter().any(|(_, b)| {
+                if matches!(&plan.executable,AgentExecutionTarget::ZhshBuiltin{name,..} if name=="wait") { !self.jobs().waitable(b) } else { !self.jobs().valid(b) }
+            }) {
+                return Err(NativeExecutionError::not_started(
+                    NativeNotStartedReason::PlanStale,
+                    "Native 作业目标已失效（PlanStale）",
+                ));
+            }
             if cancellation.is_some() {
                 if let Some(unsupported) = &plan.unsupported_execution {
                     return Err(NativeExecutionError::not_started(
@@ -308,6 +469,91 @@ impl Shell {
                         NativeNotStartedReason::PlanStale,
                         "Native 内建计划上下文已改变（PlanStale）",
                     ));
+                }
+                if command::is_job_builtin(name) {
+                    self.jobs();
+                    let jobs = self.native_jobs.get().expect("initialized job runtime");
+                    if name == "wait" {
+                        let result = super::builtin::wait::execute_with_state(
+                            jobs,
+                            &mut self.state,
+                            arguments,
+                            cancellation,
+                            &plan.job_bindings,
+                        );
+                        return Ok(Some(builtin_execution(
+                            result,
+                            cancellation.is_some(),
+                            false,
+                        )));
+                    }
+                    if plan.job_bindings.iter().any(|(_, b)| !jobs.valid(b)) {
+                        return Err(NativeExecutionError::not_started(
+                            NativeNotStartedReason::PlanStale,
+                            "Native 作业目标已失效（PlanStale）",
+                        ));
+                    }
+                    let context = super::builtin::JobContext {
+                        runtime: jobs,
+                        selection: plan.job_selection.as_deref(),
+                        bindings: &plan.job_bindings,
+                        pids: &plan.pid_bindings,
+                    };
+                    if name == "fg" {
+                        if arguments.len() > 1 {
+                            return Ok(Some(builtin_execution(
+                                super::builtin::job_error(2, "fg: expected one jobspec"),
+                                cancellation.is_some(),
+                                false,
+                            )));
+                        }
+                        let b =
+                            match context.resolve(arguments.first().map_or("%+", String::as_str)) {
+                                Ok(b) => b,
+                                Err(e) if cancellation.is_none() => {
+                                    return Ok(Some(builtin_execution(
+                                        super::builtin::job_error(1, e),
+                                        false,
+                                        false,
+                                    )))
+                                }
+                                Err(e) => {
+                                    return Err(NativeExecutionError::not_started(
+                                        NativeNotStartedReason::PlanStale,
+                                        e,
+                                    ))
+                                }
+                            };
+                        return jobs.resume(&b, true, cancellation).map_err(|e| {
+                            NativeExecutionError::Execution(AppError::io(format!("fg: {e}")))
+                        });
+                    }
+                    let result =
+                        command::dispatch_native_job(&context, name, arguments, cancellation);
+                    return Ok(Some(builtin_execution(
+                        result,
+                        cancellation.is_some(),
+                        name == "fg" || name == "suspend",
+                    )));
+                }
+                if name == "exit" {
+                    let result = super::builtin::exit::execute(&mut self.state, arguments);
+                    if self.state.should_exit {
+                        if let Err(e) = self.jobs().exit(!self.native_exit_warned, false) {
+                            self.state.should_exit = false;
+                            self.native_exit_warned = true;
+                            return Ok(Some(builtin_execution(
+                                BuiltinResult::error(format!("exit: {e}\n")),
+                                cancellation.is_some(),
+                                false,
+                            )));
+                        }
+                    }
+                    return Ok(Some(builtin_execution(
+                        result,
+                        cancellation.is_some(),
+                        false,
+                    )));
                 }
                 if matches!(name.as_str(), "source" | ".") {
                     return self
@@ -344,27 +590,30 @@ impl Shell {
                 )));
             }
             let (path, program, arguments) = self.validate_native_plan(&plan)?;
-            let environment = ExternalEnvironment {
-                cwd: &self.state.cwd,
-                exported: &self.state.env,
+            let mode = execution::requires_terminal(program, arguments);
+            let jobs = self.jobs();
+            let launch = || {
+                jobs.launch(
+                    path,
+                    program,
+                    arguments,
+                    &self.state.cwd,
+                    &self.state.env,
+                    &plan.original,
+                    cancellation.is_some() && execution::captures_output(program, arguments),
+                    cancellation.is_none() || mode,
+                    false,
+                    cancellation,
+                )
             };
-            if let Some(cancellation) = cancellation {
-                self.executor
-                    .run_native_agent(environment, path, program, arguments, cancellation)
-            } else {
-                self.executor
-                    .run_native_user(environment, path, program, arguments)
-                    .map(|code| {
-                        Some(CapturedExecution {
-                            output: String::new(),
-                            total_output_bytes: 0,
-                            exit_code: code,
-                            termination: CommandTermination::Exited,
-                            output_evidence: OutputEvidence::Unavailable,
-                        })
-                    })
-            }
+            let binding = launch().map_err(execution::spawn_error)?;
+            jobs.wait_foreground(&binding, cancellation)
+                .map(Some)
+                .map_err(|e| NativeExecutionError::Execution(AppError::io(e.to_string())))
         })();
+        if let Some(jobs) = self.native_jobs.get() {
+            self.state.last_async_pid = jobs.last_async_pid();
+        }
         match &result {
             Ok(Some(result)) => self.state.last_exit = result.exit_code,
             Err(error) => self.state.last_exit = error.code(),
@@ -382,6 +631,7 @@ fn builtin_execution(result: BuiltinResult, capture: bool, opaque: bool) -> Capt
         String::new()
     };
     CapturedExecution {
+        job: None,
         total_output_bytes: output.len(),
         output,
         exit_code: result.code,
@@ -615,7 +865,17 @@ mod builtin_tests {
     fn every_registered_builtin_has_a_native_plan_without_path_lookup() {
         let mut shell = Shell::new();
         shell.env.insert("PATH".into(), "/not-a-native-bin".into());
-        for name in command::names() {
+        for name in command::native_names() {
+            if matches!(name, "fg" | "bg" | "disown") {
+                assert!(
+                    matches!(
+                        shell.prepare_native_agent_command(name),
+                        Err(NativePreparationError::JobTarget(_))
+                    ),
+                    "{name}: missing job is not a PATH failure"
+                );
+                continue;
+            }
             assert!(
                 matches!(
                     shell.prepare_native_agent_command(name).unwrap().executable,
@@ -685,5 +945,118 @@ mod builtin_tests {
         assert_eq!(result.exit_code, 1);
         assert!(result.output.contains("16 层"));
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod job_tests {
+    use super::*;
+    #[test]
+    fn stopped_agent_job_is_retained_and_old_cancellation_cannot_kill_it() {
+        let mut shell = Shell::new();
+        shell.jobs().set_option("monitor", true).unwrap();
+        let token = CancellationToken::default();
+        let plan = shell
+            .prepare_native_agent_command("sh -c 'kill -STOP $$; printf continued'")
+            .unwrap();
+        let stopped = shell
+            .execute_native_agent_plan(plan, &token)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopped.termination, CommandTermination::StoppedRetained);
+        let binding = stopped.job.unwrap();
+        assert!(shell.jobs().valid(&binding));
+        token.cancel();
+        assert!(shell.jobs().valid(&binding));
+        let plan = shell.prepare_native_agent_command("fg %1").unwrap();
+        let resumed = shell
+            .execute_native_agent_plan(plan, &CancellationToken::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.termination, CommandTermination::Exited);
+        assert_eq!(resumed.exit_code, 0);
+        assert!(resumed.output.contains("continued"));
+    }
+    #[test]
+    fn jobs_x_freezes_argv_and_stale_job_authorization_is_rejected() {
+        let mut shell = Shell::new();
+        shell.jobs().set_option("monitor", true).unwrap();
+        shell.run_native("sh -c 'kill -STOP $$; exit 7'");
+        let plan = shell
+            .prepare_native_agent_command("jobs -x /usr/bin/printf '[%s]' %1 'a b' '$HOME'")
+            .unwrap();
+        let output = shell
+            .execute_native_agent_plan(plan, &CancellationToken::default())
+            .unwrap()
+            .unwrap();
+        assert!(output.output.ends_with("[a b][$HOME]"), "{}", output.output);
+        let stale = shell.prepare_native_agent_command("bg %+").unwrap();
+        shell.run_native("kill -KILL %1");
+        shell.jobs().wait(&[], false, true, None).unwrap();
+        shell.run_native("sh -c 'kill -STOP $$; exit 0'");
+        assert!(matches!(
+            shell.execute_native_agent_plan(stale, &CancellationToken::default()),
+            Err(NativeExecutionError::NotStarted {
+                reason: NativeNotStartedReason::PlanStale,
+                ..
+            })
+        ));
+        shell.run_native("kill -KILL %1");
+        shell.jobs().wait(&[], false, true, None).unwrap();
+    }
+    #[test]
+    fn agent_disown_bulk_selection_does_not_expand_after_authorization() {
+        let mut shell = Shell::new();
+        shell.jobs().set_option("monitor", true).unwrap();
+        let empty = shell.prepare_native_agent_command("disown -a").unwrap();
+        shell.run_native("sh -c 'kill -STOP $$; exit 0'");
+        let first = shell.jobs().resolve("%1").unwrap();
+        shell
+            .execute_native_agent_plan(empty, &CancellationToken::default())
+            .unwrap();
+        assert!(shell.jobs().valid(&first));
+        let frozen = shell.prepare_native_agent_command("disown -ah").unwrap();
+        shell.run_native("sh -c 'kill -STOP $$; exit 0'");
+        shell
+            .execute_native_agent_plan(frozen, &CancellationToken::default())
+            .unwrap();
+        // A separate query resolves both jobs; only the prepared selection was changed.
+        assert_eq!(shell.jobs().snapshots().len(), 2);
+        let remove = shell.prepare_native_agent_command("disown -a").unwrap();
+        shell.run_native("sh -c 'kill -STOP $$; exit 0'");
+        let pids = shell
+            .jobs()
+            .snapshots()
+            .iter()
+            .flat_map(|j| j.pids.clone())
+            .collect::<Vec<_>>();
+        shell
+            .execute_native_agent_plan(remove, &CancellationToken::default())
+            .unwrap();
+        assert_eq!(shell.jobs().snapshots().len(), 1);
+        assert_eq!(shell.jobs().snapshots()[0].binding.id, 3);
+        for pid in pids {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        shell.jobs().wait(&[], false, true, None).unwrap();
+    }
+    #[test]
+    fn wait_p_changes_current_shell_variables_and_mode_help_is_isolated() {
+        let mut shell = Shell::new();
+        shell.jobs().set_option("monitor", true).unwrap();
+        shell.run_native("sh -c 'kill -STOP $$; exit 7'");
+        shell.run_native("bg %1");
+        assert_eq!(shell.run_native("wait -np finished"), 7);
+        assert!(shell
+            .variables
+            .get("finished")
+            .unwrap()
+            .contains("declare -- finished="));
+        assert!(command::is_native_builtin("jobs"));
+        assert!(!command::is_builtin("jobs"));
+        assert!(command::usage("jobs").is_none());
+        assert!(command::native_usage("jobs").is_some());
     }
 }

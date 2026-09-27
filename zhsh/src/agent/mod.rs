@@ -1636,6 +1636,16 @@ fn record_execution_lifecycle(
 ) {
     task.operation_log
         .execution_started(operation_id, task.phase, task.phase_turns);
+    if command_result.termination == CommandTermination::StoppedRetained {
+        if let Some(job) = command_result.job {
+            task.operation_log.session_ownership_transferred(
+                operation_id,
+                task.phase,
+                task.phase_turns,
+                job,
+            );
+        }
+    }
     task.operation_log.execution_finished(
         operation_id,
         task.phase,
@@ -1709,6 +1719,7 @@ fn command_feedback(
         CommandTermination::BackgroundTerminated => "background_terminated",
         CommandTermination::SupervisionFailed => "supervision_failed",
         CommandTermination::StoppedTerminated => "stopped_terminated",
+        CommandTermination::StoppedRetained => "stopped_retained",
         CommandTermination::Interrupted => "interrupted",
     };
     let budget_exhausted = !result.output.is_empty()
@@ -1749,12 +1760,22 @@ fn command_feedback(
     } else {
         &limited.text
     };
+    let job_context = result
+        .job
+        .filter(|_| result.termination == CommandTermination::StoppedRetained)
+        .map(|j| {
+            format!(
+                "\njob:%{}\njob_key:{}\njob_owner:session\njob_state:stopped",
+                j.id, j.key
+            )
+        })
+        .unwrap_or_default();
     let reason = evidence_reason
         .map(|reason| format!("\noutput_reason:{reason}"))
         .unwrap_or_default();
     CommandFeedback {
         text: format!(
-        "result:{result_name}\noperation_id:{operation_id}\nexecution_started:true\nexecution_completed:{}\noutput_evidence:{evidence_name}{reason}\noutput_bytes:{}\noutput:\n{}\nexit:{}",
+        "result:{result_name}\noperation_id:{operation_id}{job_context}\nexecution_started:true\nexecution_completed:{}\noutput_evidence:{evidence_name}{reason}\noutput_bytes:{}\noutput:\n{}\nexit:{}",
         result.termination == CommandTermination::Exited,
         result.total_output_bytes,
         output,
@@ -2448,6 +2469,7 @@ mod tests {
     #[test]
     fn command_feedback_enforces_the_task_wide_output_budget() {
         let result = CapturedExecution {
+            job: None,
             output: "x".repeat(64 * 1024),
             total_output_bytes: 64 * 1024,
             exit_code: 0,
@@ -2485,6 +2507,7 @@ mod tests {
             ),
         ] {
             let result = CapturedExecution {
+                job: None,
                 output: String::new(),
                 total_output_bytes: 0,
                 exit_code: 125,
@@ -2509,6 +2532,7 @@ mod tests {
         let codecs = crate::llm::CodecRuntime::load(None);
         let redactor = SecretRedactor::for_task(None, Some(&config), &codecs);
         let result = CapturedExecution {
+            job: None,
             output: format!("prefix {} suffix", config.access_token),
             total_output_bytes: config.access_token.len() + 14,
             exit_code: 0,
@@ -2531,6 +2555,7 @@ mod tests {
         let complete = command_feedback(
             OperationId(1),
             &CapturedExecution {
+                job: None,
                 output: String::new(),
                 total_output_bytes: 0,
                 exit_code: 0,
@@ -2543,6 +2568,7 @@ mod tests {
         let unavailable = command_feedback(
             OperationId(2),
             &CapturedExecution {
+                job: None,
                 output: String::new(),
                 total_output_bytes: 0,
                 exit_code: 0,

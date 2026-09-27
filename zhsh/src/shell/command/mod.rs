@@ -11,6 +11,9 @@ use crate::application::{CodecManagementUi, LlmConfigUi};
 use crate::llm::CodecRuntime;
 use std::sync::Arc;
 
+mod native_job;
+pub(super) use native_job::execute as dispatch_native_job;
+
 pub(super) mod args;
 pub(super) mod pipeline_source;
 pub(crate) mod resolver;
@@ -30,6 +33,7 @@ pub(super) enum BuiltinPipelineSourceDisposition {
 enum HandlerKind {
     Session(Handler),
     Foreground,
+    NativeJob,
     Help,
     History,
     Type,
@@ -205,6 +209,14 @@ fn pipeline_zh(args: &[String]) -> BuiltinPipelineSourceDisposition {
 }
 
 const COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: "jobs", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "jobs [-lnprs] [jobspec ...] / jobs -x command [args ...]", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
+    CommandSpec { name: "bg", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "bg [jobspec ...]", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
+    CommandSpec { name: "wait", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "wait [-fn] [-p var] [id ...]", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
+    CommandSpec { name: "disown", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "disown [-har] [jobspec | pid ...]", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
+    CommandSpec { name: "kill", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "kill [-s signal | -n number] pid | jobspec ...", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
+    CommandSpec { name: "suspend", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "suspend [-f]", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
+    CommandSpec { name: "set", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "set -m/+m -b/+b / set -o/+o [monitor|notify]", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
+    CommandSpec { name: "shopt", handler: HandlerKind::NativeJob, agent_policy: agent_never, pipeline_source_policy: pipeline_reject_foreground, takes_arguments: true, usage: "shopt [-suqp] [checkjobs|huponexit]", summary: "Native 会话作业管理", details: "仅操作当前 zhsh 实例的作业；不支持跨实例作业接管。" },
     CommandSpec {
         name: ".",
         handler: HandlerKind::Session(builtin::source::execute),
@@ -398,7 +410,10 @@ pub(crate) enum Origin {
 
 /// 按注册顺序迭代全部内建命令名。
 pub(crate) fn names() -> impl Iterator<Item = &'static str> {
-    COMMANDS.iter().map(|command| command.name)
+    COMMANDS
+        .iter()
+        .filter(|c| !matches!(c.handler, HandlerKind::NativeJob))
+        .map(|command| command.name)
 }
 
 /// 判断名称是否属于 zhsh 内建命令。
@@ -407,7 +422,9 @@ pub(crate) fn names() -> impl Iterator<Item = &'static str> {
 ///
 /// - `name`：不含参数的命令名。
 pub(crate) fn is_builtin(name: &str) -> bool {
-    COMMANDS.iter().any(|command| command.name == name)
+    COMMANDS
+        .iter()
+        .any(|command| command.name == name && !matches!(command.handler, HandlerKind::NativeJob))
 }
 
 /// 判断命令补全后是否应追加空格以继续输入参数。
@@ -451,6 +468,7 @@ pub(super) fn assign_prompt_variables(
 pub(crate) fn descriptions() -> impl Iterator<Item = (&'static str, &'static str)> {
     COMMANDS
         .iter()
+        .filter(|c| !matches!(c.handler, HandlerKind::NativeJob))
         .map(|command| (command.name, command.summary))
 }
 
@@ -462,7 +480,7 @@ pub(crate) fn descriptions() -> impl Iterator<Item = (&'static str, &'static str
 pub(crate) fn usage(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
     COMMANDS
         .iter()
-        .find(|command| command.name == name)
+        .find(|command| command.name == name && !matches!(command.handler, HandlerKind::NativeJob))
         .map(|command| (command.usage, command.summary, command.details))
 }
 
@@ -589,22 +607,34 @@ pub(super) fn dispatch_native_words(
         "type" => Some(builtin::r#type::execute_native(
             session,
             arguments,
-            &names().collect::<Vec<_>>(),
+            &native_names().collect::<Vec<_>>(),
         )),
         "help" => Some(builtin::help::execute(
             arguments,
-            &descriptions().collect::<Vec<_>>(),
+            &COMMANDS
+                .iter()
+                .map(|c| (c.name, c.summary))
+                .collect::<Vec<_>>(),
             native_usage,
         )),
         _ => dispatch_words(session, name, arguments, Origin::User, history, ports),
     }
 }
 
-fn native_usage(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
-    if matches!(name, "source" | ".") {
+pub(super) fn native_usage(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    if name == "fg" {
+        Some((
+            "fg [jobspec]",
+            "恢复当前实例的前台作业",
+            "支持作业编号、当前/前一及命令前缀或子串；不重新执行原命令。",
+        ))
+    } else if matches!(name, "source" | ".") {
         Some(("source 文件 / . 文件", "在当前会话逐行执行 Native 命令", "支持当前 Native 字面命令与内建；不调用 Bash。不支持的语法会停止读取，此前的状态修改保留；位置参数尚未实现。"))
     } else {
-        usage(name)
+        COMMANDS
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| (c.usage, c.summary, c.details))
     }
 }
 
@@ -616,7 +646,9 @@ fn dispatch_words(
     history: &[String],
     ports: DispatchPorts<'_, '_, '_, '_>,
 ) -> Option<BuiltinResult> {
-    let command = COMMANDS.iter().find(|command| command.name == name)?;
+    let command = COMMANDS.iter().find(|command| {
+        command.name == name && !matches!(command.handler, HandlerKind::NativeJob)
+    })?;
     if origin == Origin::Agent && !(command.agent_policy)(arguments) {
         return Some(BuiltinResult {
             stdout: String::new(),
@@ -627,6 +659,7 @@ fn dispatch_words(
 
     let result = match command.handler {
         HandlerKind::Session(handler) => handler(session, arguments),
+        HandlerKind::NativeJob => unreachable!("Native jobs have their own dispatcher"),
         HandlerKind::Foreground => builtin::fg::execute(ports.foreground_control, arguments),
         HandlerKind::Help => {
             let descriptions: Vec<_> = descriptions().collect();
@@ -657,9 +690,138 @@ fn dispatch_words(
     Some(result)
 }
 
+pub(crate) fn native_names() -> impl Iterator<Item = &'static str> {
+    COMMANDS.iter().map(|c| c.name)
+}
+pub(super) fn is_native_builtin(name: &str) -> bool {
+    native_names().any(|n| n == name)
+}
+pub(super) fn is_job_builtin(name: &str) -> bool {
+    name == "fg"
+        || COMMANDS
+            .iter()
+            .any(|c| c.name == name && matches!(c.handler, HandlerKind::NativeJob))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_files_match_registered_commands_and_include_usage_docs() {
+        use std::collections::BTreeSet;
+        use std::path::{Path, PathBuf};
+
+        fn files(directory: &Path) -> Vec<PathBuf> {
+            std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+                .filter(|path| path.file_name().unwrap() != "mod.rs")
+                .collect()
+        }
+
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shell/builtin");
+        let mut command_files = files(&directory);
+        let actual: BTreeSet<_> = command_files
+            .iter()
+            .map(|path| path.file_stem().unwrap().to_str().unwrap().to_owned())
+            .collect();
+        let expected: BTreeSet<_> = native_names()
+            .map(|name| if name == "." { "source" } else { name }.to_owned())
+            .collect();
+        assert_eq!(actual, expected, "顶层文件必须与命令注册名对应");
+
+        command_files.extend(files(&directory.join("zh")));
+        for path in command_files {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let docs = source
+                .lines()
+                .take_while(|line| line.starts_with("//!"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for section in [
+                "# 用法",
+                "# 参数与选项",
+                "# 模式与上下文",
+                "# 示例",
+                "# 输出与退出状态",
+                "# 状态影响",
+            ] {
+                assert!(docs.contains(section), "{} 缺少 {section}", path.display());
+            }
+            assert!(
+                docs.contains("```sh") || docs.contains("```text"),
+                "{} 缺少命令示例",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn native_job_names_do_not_enter_default_builtin_dispatch() {
+        let mut session = SessionState::test();
+        for name in [
+            "jobs", "bg", "wait", "disown", "kill", "suspend", "set", "shopt",
+        ] {
+            assert!(is_native_builtin(name));
+            assert!(!is_builtin(name));
+            assert!(!names().any(|candidate| candidate == name));
+            assert!(usage(name).is_none());
+            assert!(native_usage(name).is_some());
+            for origin in [Origin::User, Origin::Agent] {
+                assert!(
+                    dispatch(&mut session, name, origin, &[], DispatchPorts::default()).is_none(),
+                    "{name} 不得进入默认模式内建处理"
+                );
+            }
+        }
+        for auxiliary in [
+            "job_control",
+            "llm_config",
+            "table",
+            "codec",
+            "safety",
+            "trust",
+        ] {
+            assert!(!is_native_builtin(auxiliary));
+            assert!(!is_builtin(auxiliary));
+        }
+    }
+
+    #[test]
+    fn foreground_and_source_help_keep_their_mode_specific_routes() {
+        let mut session = SessionState::test();
+        for (name, delegated_usage, native_usage) in [
+            ("fg", "用法：fg\n", "用法：fg [jobspec]\n"),
+            (
+                "source",
+                "用法：source 文件 [参数 ...]\n",
+                "用法：source 文件 / . 文件\n",
+            ),
+        ] {
+            let delegated = dispatch(
+                &mut session,
+                &format!("help {name}"),
+                Origin::User,
+                &[],
+                DispatchPorts::default(),
+            )
+            .unwrap();
+            let native = dispatch_native_words(
+                &mut session,
+                "help",
+                &[name.into()],
+                &[],
+                DispatchPorts::default(),
+            )
+            .unwrap();
+            assert_eq!((delegated.code, native.code), (0, 0));
+            assert!(delegated.stdout.contains(delegated_usage));
+            assert!(native.stdout.contains(native_usage));
+            assert!(!delegated.stdout.contains(native_usage));
+        }
+    }
 
     #[test]
     fn registry_is_unique() {

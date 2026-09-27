@@ -147,7 +147,7 @@ Shell 函数和可重放普通变量。
 .TP
 .B fg
 恢复最近一次被 Ctrl-Z 暂停的整行前台命令。
-当前只支持无参数形式，不提供作业编号或完整 job control。
+默认 Bash 模式只支持无参数形式。Native 模式接受 jobspec，例如 fg %1。
 .TP
 .B exit [\fI状态码\fR]
 退出 zhsh。
@@ -579,10 +579,14 @@ zhsh 不实现完整 Shell parser。
 交给一次性 Bash 的复合命令不会把其中的 cd、export、unset、
 alias 或 zh 状态变化同步回当前会话。
 .PP
-zhsh 不实现完整 job control。
-.B fg
-只是单槽位的整行命令恢复能力；没有 jobs、bg、作业编号、wait 或 disown，也不单独管理
-一行 Bash 命令内部创建的多个后台作业。状态型 source 被暂停时终止且不提交会话快照。
+默认 Bash 模式的 fg 只是单槽位的整行命令恢复能力，不管理代理 Bash 内部的多个作业。
+状态型 Bash source 被暂停时终止且不提交会话快照。
+.PP
+Native 模式提供实例独立的 jobs、fg、bg、wait、disown、kill、suspend。
+用户与获准的 Agent 命令共享同一作业表；不同 zhsh 实例不共享作业、等待结果或通知。
+Agent 命令停止后保留为会话作业。使用 help NAME 查看各命令参数。
+set 的 monitor/notify 和 shopt 的 checkjobs/huponexit 控制作业选项；当前启动入口不是登录 Shell。
+Native 尚不解析 command &、管道或组合命令；可从 Ctrl-Z、jobs、bg %1、fg %1 使用作业管理。
 .PP
 已识别的密码输入和终端程序使用前台模式；
 .br

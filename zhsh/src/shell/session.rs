@@ -32,6 +32,8 @@ pub(crate) struct SessionState {
     pub(crate) cwd: PathBuf,
     /// 最近一条已处理命令的退出状态。
     pub(crate) last_exit: i32,
+    /// Native last asynchronous pipeline member; expansion belongs to the language layer.
+    pub(crate) last_async_pid: Option<i32>,
     /// `exit` 内建命令设置的 REPL 终止标记。
     pub(crate) should_exit: bool,
     /// 当前启用的 LLM 配置；未配置时为 [`None`]。
@@ -79,6 +81,7 @@ impl SessionState {
             aliases: HashMap::new(),
             cwd,
             last_exit: 0,
+            last_async_pid: None,
             should_exit: false,
             active_llm_name: llm.as_ref().map(|config| config.name.clone()),
             llm,

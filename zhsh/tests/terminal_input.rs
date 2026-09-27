@@ -606,7 +606,7 @@ fn native_interrupt_stop_and_fg_preserve_terminal_control() {
             String::from_utf8_lossy(&returned)
         );
         if signal == b'\x1a' {
-            assert!(contains(&returned, "运行 fg 恢复".as_bytes()));
+            assert!(contains(&returned, b"Stopped"));
             master.write_all(b"fg\r").unwrap();
             let deadline = Instant::now() + Duration::from_secs(2);
             while unsafe { libc::tcgetpgrp(master.as_raw_fd()) } == child.id() as i32

@@ -192,6 +192,13 @@ fn parse_native_words(input: &str, builtin_arguments: bool) -> Result<Vec<String
                     quoted = true;
                     assignment_prefix = false;
                 }
+                '?' if builtin_arguments
+                    && word == "%"
+                    && words.first().is_some_and(|n| super::is_job_builtin(n)) =>
+                {
+                    word.push(c);
+                    started = true;
+                }
                 '$' | '`' | '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '&' | ';' | '|'
                 | '<' | '>' | '\n' | '\r' => return Err(ParseError::NeedsBash),
                 '#' if !started => return Err(ParseError::NeedsBash),

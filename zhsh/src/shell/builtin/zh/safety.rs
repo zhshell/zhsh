@@ -1,11 +1,43 @@
-//! `zh safety`：查看、校验、安装和显式重载进程内 Safety 规则。
+//! `zh safety`：查看、诊断、校验和管理 Agent 分类规则。
+//!
+//! # 用法
+//! `zh safety`；`zh safety -t [SOURCE]`；`zh safety assess 'COMMAND'`；
+//! `zh safety install [--overwrite] [--] FILE...`；`zh safety reload`；
+//! `zh safety help|-h|--help`、`zh safety install help|-h|--help`。
+//! 无参数列出当前进程内存规则。
+//!
+//! # 参数与选项
+//! -t 无源时校验磁盘候选，有源时校验指定输入，均不安装。
+//! assess 接受一个非空命令字符串，只诊断不执行；仍使用原 AgentCommandPlan::prepare。
+//! install 接受多个 .zhse.json 文件或规则包 .zhse.json.gz；--overwrite 最多一次，允许覆盖不同内容，-- 结束选项。
+//! reload 完整校验后更新当前进程规则快照。
+//!
+//! # 模式与上下文
+//! 两种模式使用相同 SafetyManagementPort，不把 assess 改接 Native 计划准备。
+//! 无运行时只能取得原帮助；覆盖不同内容且未指定 --overwrite 时需要原 SafetyManagementUi。
+//!
+//! # 示例
+//! ```sh
+//! zh safety
+//! zh safety assess 'pwd'
+//! ```
+//! 查看内存规则，再展示 pwd 的规则、目标和决策，不实际执行 pwd。
+//!
+//! # 输出与退出状态
+//! 清单、诊断及回执写 stdout，校验/安装错误和警告按原流程输出。成功 0，参数/服务/校验/安装失败为 1。
+//! 覆盖确认的拒绝、中断或超时返回取消回执和 0；不能读取确认则为 1。
+//!
+//! # 状态影响
+//! install 写用户规则文件但不自动改变当前 generation；reload 才激活。
+//! 规则按既有 mtime/文件名顺序加载，后匹配覆盖前匹配。
+//! 默认 Agent 不直接执行此子命令，Native 保留授权；委托模式 install/reload 不可作 builtin 管道源，查询/诊断沿用原路由。
 
-use super::super::{
+use super::super::super::{
     SafetyInstallOutcomeView, SafetyInstallPlan, SafetyInstallReport, SafetyInstallRequest,
     SafetyManagementPort, SafetyManagementUi, SafetyOperationReport, SafetyOverwriteDecision,
     SafetyOverwritePrompt, SafetyRuleRowView, SessionState,
 };
-use super::BuiltinResult;
+use super::super::BuiltinResult;
 use crate::common::{terminal_safe_path, ActiveCancellation, CancellationToken};
 use std::sync::Arc;
 
@@ -32,7 +64,7 @@ pub(crate) fn execute(
         [] => list(port),
         [value] if value == "-t" => report(port.test_candidate(), false),
         [flag, source] if flag == "-t" => {
-            let source = match super::plugin_path::resolve_source(shell, source) {
+            let source = match super::support::plugin_path::resolve_source(shell, source) {
                 Ok(source) => source,
                 Err(error) => return BuiltinResult::error(format!("zh safety -t: {error}\n")),
             };
@@ -50,7 +82,7 @@ fn assess(shell: &SessionState, command: &str, port: &dyn SafetyManagementPort) 
         return BuiltinResult::error("zh safety assess: COMMAND 不能为空\n");
     }
     let view = port.assess(
-        super::super::AgentCommandPlan::prepare(shell, command),
+        super::super::super::AgentCommandPlan::prepare(shell, command),
         shell.agent_trust(),
     );
     let mut output = String::new();
@@ -110,7 +142,7 @@ fn install(
     }
     let mut sources = Vec::with_capacity(positional.len());
     for source in positional {
-        match super::plugin_path::resolve_source(shell, source) {
+        match super::support::plugin_path::resolve_source(shell, source) {
             Ok(source) => sources.push(source),
             Err(error) => return BuiltinResult::error(format!("zh safety install: {error}\n")),
         }
@@ -123,7 +155,7 @@ fn install(
     let conflict_count = plan
         .entries
         .iter()
-        .filter(|entry| entry.state == super::super::SafetyInstallStateView::Conflict)
+        .filter(|entry| entry.state == super::super::super::SafetyInstallStateView::Conflict)
         .count();
     if conflict_count != 0 && !overwrite {
         let Some(ui) = ui else {
@@ -138,7 +170,7 @@ fn install(
                 new_rules: plan
                     .entries
                     .iter()
-                    .filter(|entry| entry.state == super::super::SafetyInstallStateView::New)
+                    .filter(|entry| entry.state == super::super::super::SafetyInstallStateView::New)
                     .count(),
                 conflicts: conflict_count,
             },
@@ -221,7 +253,7 @@ fn install_report(report: SafetyInstallReport) -> BuiltinResult {
             ]
         })
         .collect();
-    let mut stdout = super::table::render(["RULE", "STATE", "DESTINATION"], rows);
+    let mut stdout = super::support::table::render(["RULE", "STATE", "DESTINATION"], rows);
     if report.candidate_reloadable {
         stdout.push_str(&format!(
             "\ngeneration {} unchanged · run `zh safety reload` to activate\n",
@@ -243,7 +275,7 @@ fn install_report(report: SafetyInstallReport) -> BuiltinResult {
 fn list(port: &dyn SafetyManagementPort) -> BuiltinResult {
     let catalog = port.catalog();
     let rows: Vec<[String; 8]> = catalog.rows.iter().map(table_row).collect();
-    let mut output = super::table::render(
+    let mut output = super::support::table::render(
         [
             "ORDER", "SOURCE", "RULE SET", "PROGRAM", "RULES", "STATUS", "MTIME", "FILE",
         ],

@@ -37,7 +37,7 @@ pub struct RunOptions {
 }
 
 impl RunOptions {
-    /// 将 ASCII 用户输入和 Agent run 命令交给 Native 空执行入口。
+    /// 将 ASCII 用户输入和 Agent run 命令交给独立 Native 执行与作业管理入口。
     #[must_use]
     pub fn with_native(mut self, enabled: bool) -> Self {
         self.native = enabled;
@@ -91,6 +91,13 @@ pub fn run_with_options(options: RunOptions) -> i32 {
         );
     }
     let mut shell = Shell::from_startup(user_home.path(), Arc::clone(&codec_runtime));
+    if options.native {
+        shell.enable_native_jobs(std::io::IsTerminal::is_terminal(&std::io::stdin()));
+        if let Err(error) = shell.install_native_job_signals() {
+            eprintln!("zhsh: {error}");
+            return 1;
+        }
+    }
     shell.set_llm_config_ui(Box::new(llm_wizard::TerminalLlmConfigUi));
     shell.set_codec_management_ui(Box::new(codec_ui::TerminalCodecManagementUi));
     shell.set_safety_management_ui(Box::new(safety_ui::TerminalSafetyManagementUi));
@@ -149,7 +156,13 @@ pub fn run_with_options(options: RunOptions) -> i32 {
     }
 
     // 信号处理
-    if let Err(error) = ctrlc::set_handler(agent::request_cancel) {
+    let native_signals = options.native;
+    if let Err(error) = ctrlc::set_handler(move || {
+        if native_signals {
+            Shell::native_interrupt();
+        }
+        agent::request_cancel();
+    }) {
         eprintln!("zhsh: 无法安装 Ctrl-C 处理器: {error}");
         return 1;
     }
@@ -184,10 +197,25 @@ pub fn run_with_options(options: RunOptions) -> i32 {
             return 1;
         }
     };
-    // zhsh 尚未实现完整 job control。提示符处的 Ctrl-Z（部分终端的 Pause 键也会
-    // 发送同一个 VSUSP 字符）必须只是无操作，不能让 rustyline 暂停整个 zhsh 进程组。
-    // 前台外部命令的停止与恢复由 Shell 执行器单独监督。
+    // 提示符 Ctrl-Z 保持无操作；Native 显式 suspend 与外部前台作业各自管理暂停。
     rl.bind_sequence(KeyEvent::ctrl('Z'), Cmd::Noop);
+    if options.native {
+        match rl.create_external_printer() {
+            Ok(printer) => {
+                let printer = std::sync::Mutex::new(printer);
+                shell.set_native_notice_sink(Arc::new(move |message| {
+                    use rustyline::ExternalPrinter;
+                    if let Ok(mut printer) = printer.lock() {
+                        let _ = printer.print(message);
+                    }
+                }));
+            }
+            Err(error) => {
+                eprintln!("zhsh: 无法初始化作业通知: {error}");
+                return 1;
+            }
+        }
+    }
     let completion_cache = Arc::new(completion::CompletionCache::new());
     rl.set_helper(Some(completion::ShellCompleter::new(
         &shell,
@@ -204,6 +232,16 @@ pub fn run_with_options(options: RunOptions) -> i32 {
     }
     let mut command_number = 1u64;
     'repl: loop {
+        if let Some(error) = shell.native_job_failure() {
+            eprintln!("zhsh: Native 作业监督失败: {error}");
+            shell.last_exit = 1;
+            break;
+        }
+        if options.native {
+            for notice in shell.native_notifications() {
+                eprintln!("{notice}");
+            }
+        }
         let context = prompt::PromptContext {
             history_number: rl.history().len() + 1,
             command_number,
@@ -260,6 +298,9 @@ pub fn run_with_options(options: RunOptions) -> i32 {
             }
             Err(ReadlineError::Interrupted) => continue,
             Err(ReadlineError::Eof) => {
+                if options.native && !shell.native_eof() {
+                    continue;
+                }
                 eprintln!("bye");
                 break;
             }

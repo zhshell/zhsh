@@ -15,7 +15,7 @@ fn read(path: impl AsRef<Path>) -> String {
 }
 
 const RUNTIME_CONTRACT: &str = r#"input_kinds=UserCommand,AgentInput
-command_terminations=Exited,OutputLimit,BackgroundTerminated,SupervisionFailed,StoppedTerminated,Interrupted
+command_terminations=Exited,OutputLimit,BackgroundTerminated,SupervisionFailed,StoppedTerminated,StoppedRetained,Interrupted
 output_evidence=Complete,Truncated,Partial,Unavailable,CaptureFailed
 model_tiers=Flash,Standard,Max
 error_kinds=Input,Io,Http,Protocol,Cancelled,Internal
@@ -31,7 +31,7 @@ history_limit=10000
 agent_command_output_limit=1024*1024
 agent_command_feedback_limit=64*1024
 agent_task_feedback_limit=256*1024
-source_files=zhsh/src/main.rs,zhsh/src/repl/mod.rs,zhsh/src/repl/input.rs,zhsh/src/repl/completion.rs,zhsh/src/repl/llm_wizard.rs,zhsh/src/shell/mod.rs,zhsh/src/shell/trust.rs,zhsh/src/shell/safety_management.rs,zhsh/src/shell/command/mod.rs,zhsh/src/shell/command/args.rs,zhsh/src/shell/builtin/trust.rs,zhsh/src/shell/builtin/safety.rs,zhsh/src/shell/executor/mod.rs,zhsh/src/shell/executor/captured.rs,zhsh/src/shell/executor/interactive.rs,zhsh/src/common/cancellation.rs,zhsh/src/agent/mod.rs,zhsh/src/agent/operation_log.rs,zhsh/src/agent/protocol.rs,zhsh/src/agent/safety/mod.rs,zhsh/src/agent/safety/runtime.rs,zhsh/src/agent/safety/builtin/mod.rs,zhsh/src/agent/safety/builtin/rules.rs,zhsh/src/agent/safety/external.rs,zhsh/src/agent/terminal.rs,zhsh/src/llm/mod.rs,zhsh/src/llm/model.rs,zhsh/src/application/llm_config.rs"#;
+source_files=zhsh/src/main.rs,zhsh/src/repl/mod.rs,zhsh/src/repl/input.rs,zhsh/src/repl/completion.rs,zhsh/src/repl/llm_wizard.rs,zhsh/src/shell/mod.rs,zhsh/src/shell/trust.rs,zhsh/src/shell/safety_management.rs,zhsh/src/shell/command/mod.rs,zhsh/src/shell/command/args.rs,zhsh/src/shell/builtin/zh/trust.rs,zhsh/src/shell/builtin/zh/safety.rs,zhsh/src/shell/executor/mod.rs,zhsh/src/shell/executor/captured.rs,zhsh/src/shell/executor/interactive.rs,zhsh/src/common/cancellation.rs,zhsh/src/agent/mod.rs,zhsh/src/agent/operation_log.rs,zhsh/src/agent/protocol.rs,zhsh/src/agent/safety/mod.rs,zhsh/src/agent/safety/runtime.rs,zhsh/src/agent/safety/builtin/mod.rs,zhsh/src/agent/safety/builtin/rules.rs,zhsh/src/agent/safety/external.rs,zhsh/src/agent/terminal.rs,zhsh/src/llm/mod.rs,zhsh/src/llm/model.rs,zhsh/src/application/llm_config.rs"#;
 
 fn contract() -> HashMap<String, String> {
     RUNTIME_CONTRACT

@@ -5,7 +5,10 @@ use unicode_width::UnicodeWidthStr;
 /// 按 Unicode 显示宽度渲染固定列数的表格。
 ///
 /// 单元格先被压平成一行并转义控制字符；列之间固定使用两个 ASCII 空格，行尾不补空格。
-pub(super) fn render<const N: usize>(headers: [&str; N], rows: Vec<[String; N]>) -> String {
+pub(in super::super) fn render<const N: usize>(
+    headers: [&str; N],
+    rows: Vec<[String; N]>,
+) -> String {
     let headers = headers.map(sanitize_cell);
     let rows: Vec<_> = rows
         .into_iter()

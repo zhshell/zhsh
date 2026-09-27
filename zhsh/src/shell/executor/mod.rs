@@ -71,6 +71,8 @@ pub(crate) enum CommandTermination {
     SupervisionFailed,
     /// Agent 前台交互命令被终端暂停；宿主已继续并终止该进程组以收回终端。
     StoppedTerminated,
+    /// Native stopped job is retained by the current Shell instance.
+    StoppedRetained,
     /// Agent 为进入手动澄清而中断并回收了捕获命令。
     Interrupted,
 }
@@ -110,6 +112,8 @@ impl OutputEvidence {
 /// 有界捕获后返回给 Shell 和 Agent 的命令结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CapturedExecution {
+    /// Native instance-local job identity; absent for synchronous builtins and Bash.
+    pub(crate) job: Option<super::job::Binding>,
     /// 有界的 UTF-8 宽松解码输出，可能包含截断标记。
     pub(crate) output: String,
     /// 从两个管道实际读取的原始字节总数。
@@ -896,6 +900,7 @@ mod tests {
             _: &CancellationToken,
         ) -> AppResult<Option<CapturedExecution>> {
             Ok(Some(CapturedExecution {
+                job: None,
                 output: "fake".into(),
                 total_output_bytes: 4,
                 exit_code: 24,
@@ -921,6 +926,7 @@ mod tests {
                 .run_agent(&session, "ignored", &CancellationToken::default())
                 .unwrap(),
             Some(CapturedExecution {
+                job: None,
                 output: "fake".into(),
                 total_output_bytes: 4,
                 exit_code: 24,

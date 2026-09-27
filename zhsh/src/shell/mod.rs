@@ -17,6 +17,8 @@ use crate::common::{AppError, AppResult, CancellationToken};
 use crate::llm;
 use command::{BuiltinPipelineSourceDisposition, Origin};
 use executor::{BashExecutor, CommandExecutor};
+mod job;
+pub(crate) use job::{Binding as JobBinding, PidBinding};
 use std::env;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -50,6 +52,9 @@ pub(crate) struct Shell {
     state: SessionState,
     codec_runtime: Arc<llm::CodecRuntime>,
     executor: BashExecutor,
+    native_jobs: std::sync::OnceLock<job::JobRuntime>,
+    native_mode: bool,
+    native_exit_warned: bool,
     startup_errors: Vec<AppError>,
     llm_config_ui: Option<Box<dyn LlmConfigUi>>,
     codec_management_ui: Option<Box<dyn CodecManagementUi>>,
@@ -111,6 +116,9 @@ impl Shell {
             state,
             codec_runtime,
             executor: BashExecutor::default(),
+            native_jobs: std::sync::OnceLock::new(),
+            native_mode: false,
+            native_exit_warned: false,
             startup_errors,
             llm_config_ui: None,
             codec_management_ui: None,
@@ -200,6 +208,13 @@ impl Shell {
     }
 
     /// 按注册顺序返回所有内建命令名。
+    pub(crate) fn native_builtin_names(&self) -> Vec<String> {
+        if self.native_mode {
+            command::native_names().map(str::to_owned).collect()
+        } else {
+            Vec::new()
+        }
+    }
     pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
         command::names()
     }
@@ -411,6 +426,7 @@ impl Shell {
                     .ok_or_else(|| AppError::internal("计划中的 zhsh builtin 已从注册表消失"))?;
                 let output = result.combined();
                 Some(CapturedExecution {
+                    job: None,
                     total_output_bytes: output.len(),
                     output,
                     exit_code: result.code,
@@ -618,6 +634,7 @@ impl Shell {
                         (captured, total, OutputEvidence::Complete)
                     };
                 let result = Some(CapturedExecution {
+                    job: None,
                     total_output_bytes,
                     output,
                     exit_code: result.code,
@@ -671,6 +688,7 @@ impl Shell {
             Err(error) => {
                 let output = format!("zhsh: {error}\n");
                 Some(CapturedExecution {
+                    job: None,
                     total_output_bytes: output.len(),
                     output,
                     exit_code: 1,
@@ -787,6 +805,7 @@ fn charge_output_budget(
 
 fn compound_output_limit() -> CapturedExecution {
     CapturedExecution {
+        job: None,
         output: "[zhsh: 组合命令累计输出已达到 1 MiB 上限]\n".into(),
         total_output_bytes: 0,
         exit_code: 125,

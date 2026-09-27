@@ -1,6 +1,26 @@
-//! `help`：列出 zhsh 内建命令或显示指定命令的简要用法。
+//! `help`：列出当前模式的 zhsh 内建命令或查看单项帮助。
 //!
-//! 用法：`help [内建命令]`
+//! # 用法
+//! `help [内建命令]`；无参数列出命令名与摘要。
+//!
+//! # 参数与选项
+//! 至多一个命令名；没有通用的 -h/--help 选项。`help .` 查询 source 的同义入口。
+//!
+//! # 模式与上下文
+//! 默认模式从 descriptions/usage 读取过滤后的注册项；Native 使用全部注册项与 native_usage，保留 fg/source 的模式专属用法。
+//!
+//! # 示例
+//! ```sh
+//! help source
+//! ```
+//! 显示当前模式的 source 用法；Native 说明逐行执行，默认模式说明 Bash 状态同步。
+//!
+//! # 输出与退出状态
+//! 列表或详细用法写 stdout，成功 0。未知名称或参数过多为 1，写 stderr。
+//!
+//! # 状态影响
+//! 查询不修改会话；默认模式 Agent 可调用，Native Agent 仍经过既有 Safety/授权。 委托模式可作为 builtin 管道源。
+//! 帮助文本仍来自既有注册表；本文件的源码说明不生成或改写运行时帮助。
 
 use super::BuiltinResult;
 use unicode_width::UnicodeWidthStr;

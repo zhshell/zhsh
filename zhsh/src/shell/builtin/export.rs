@@ -1,16 +1,33 @@
-//! `export`：设置、取消导出或列出当前会话的环境变量。
+//! `export`：查询、设置或取消当前会话变量的导出属性。
 //!
-//! 用法：`export [-n] [名称[=值] ...]`
+//! # 用法
+//! `export`、`export -p`、`export [-n|--] [名称[=值] ...]`。无参数列出导出变量。
+//!
+//! # 参数与选项
+//! `-p` 单独使用时列出；`-n` 取消导出并保留可用的 Shell 值；`--` 结束选项。
+//! 名称为 ASCII 字母或下划线开头的字母、数字、下划线串；赋值内不能包含 NUL。
+//!
+//! # 模式与上下文
+//! 默认 Bash 委托模式与 Native 均通过各自路由调用；此处列出内建接受的字面参数。
+//! 默认模式保留 Bash 声明重放行为；Native 通过 execute_native 将已有可解析普通标量立即恢复到 env。
+//!
+//! # 示例
+//! ```sh
+//! export EXAMPLE=value
+//! export -n EXAMPLE
+//! export EXAMPLE
+//! ```
+//! 定义、取消导出后再次导出；Native 后续进程立即可见该标量。
+//!
+//! # 输出与退出状态
+//! 列表写 stdout，设置通常不输出。成功 0；参数、变量名或 Native 不支持的声明等错误为 1，写 stderr。
+//!
+//! # 状态影响
+//! 影响当前环境、普通变量及相关提示符变量；多项处理可能保留已成功的修改。
+//! 默认 Agent 只允许无参数或 -p；Native 保留授权。委托模式查询作管道源，修改形式在 Bash 子环境处理。
 
 use super::super::SessionState;
-use super::BuiltinResult;
-
-/// 判断名称是否符合可导出 Shell 变量的 ASCII 标识符语法。
-pub(crate) fn valid_name(name: &str) -> bool {
-    let mut characters = name.chars();
-    matches!(characters.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
-        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
-}
+use super::{support::variable::valid_name, BuiltinResult};
 
 fn quote(value: &str) -> String {
     let escaped = value

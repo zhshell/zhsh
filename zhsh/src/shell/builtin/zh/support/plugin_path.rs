@@ -1,10 +1,10 @@
 //! 用户插件安装参数的有限路径解析。
 
-use super::super::SessionState;
+use super::super::super::super::SessionState;
 use crate::common::{AppError, AppResult};
 use std::path::{Path, PathBuf};
 
-pub(super) fn resolve_source(shell: &SessionState, argument: &str) -> AppResult<PathBuf> {
+pub(in super::super) fn resolve_source(shell: &SessionState, argument: &str) -> AppResult<PathBuf> {
     if argument.is_empty() || argument.contains('\0') {
         return Err(AppError::input("插件源路径为空或包含 NUL"));
     }

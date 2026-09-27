@@ -105,6 +105,7 @@ impl ShellCompleter {
     /// helper，并始终复用同一个 [`CompletionCache`]。
     pub(crate) fn new(shell: &Shell, cache: Arc<CompletionCache>) -> Self {
         let mut aliases = shell.aliases.keys().cloned().collect::<Vec<_>>();
+        aliases.extend(shell.native_builtin_names());
         aliases.sort();
         let mut functions = shell.functions.keys().cloned().collect::<Vec<_>>();
         functions.sort();

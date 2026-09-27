@@ -2,8 +2,8 @@
 //!
 //! 用法：`zh ls`、`zh use <配置名>`、`zh llm [-m|--modify] [配置名]`
 
-use super::super::SessionState;
-use super::BuiltinResult;
+use super::super::super::super::SessionState;
+use super::super::super::BuiltinResult;
 use crate::application::{
     LlmConfigAction, LlmConfigService, LlmConfigUi, LlmConfigUiError, SaveMode,
 };

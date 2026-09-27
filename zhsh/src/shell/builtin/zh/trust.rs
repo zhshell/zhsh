@@ -1,9 +1,32 @@
-//! `zh trust`：查询或修改 Agent 授信等级。
+//! `zh trust`：查看或设置 Agent 授信等级。
 //!
-//! 用法：`zh trust [-w] [balanced|confirm|trusted]`
+//! # 用法
+//! `zh trust [-w] [balanced|confirm|trusted]`；`zh trust help|-h|--help`。无参数查询当前等级。
+//!
+//! # 参数与选项
+//! balanced 为默认可信只读策略，confirm 要求确认，trusted 仍保留强制确认边界。
+//! -w 最多一次，写入启动时确定的用户目录中的 .zhshrc；仅 -w 时持久化当前等级。
+//! 等级只能给一个，帮助标志必须单独使用。
+//!
+//! # 模式与上下文
+//! 默认委托模式与 Native 复用相同授信处理；持久化依赖可用的启动用户目录，不随后续 HOME 赋值切换。
+//!
+//! # 示例
+//! ```sh
+//! zh trust
+//! ```
+//! 显示当前会话的有效授信等级。
+//!
+//! # 输出与退出状态
+//! 查询或修改回执写 stdout，成功 0；参数和持久化错误为 1，写 stderr。
+//!
+//! # 状态影响
+//! 无 -w 的修改仅影响会话；-w 先完成原子持久化再提交会话，写入失败不切换等级。
+//! 默认 Agent 仅允许无参数查询；Native 保留原授权。委托模式查询可作 builtin 管道源，授信修改不可。
+//! 该策略针对 Agent，不限制用户直接输入的 Shell 命令。
 
-use super::super::{trust, AgentTrust, SessionState};
-use super::BuiltinResult;
+use super::super::super::{trust, AgentTrust, SessionState};
+use super::super::BuiltinResult;
 
 const HELP: &str = "Agent 授信：查看或修改 Agent 命令的确认策略。\n\n用法：zh trust [-w] [balanced|confirm|trusted]\n\n等级：\n  balanced  默认策略，只自动执行满足可信只读条件的命令\n  confirm   所有可执行 Agent 命令都需要确认\n  trusted   额外放行受限的任务范围内普通修改，不绕过强制确认边界\n\n选项：\n  -w  同时写入 ~/.zhshrc；省略时只影响当前会话\n\nSafety 分类不是安全证明，用户直接输入的 Shell 命令不经过该策略。\n详细说明：man zhsh\n";
 

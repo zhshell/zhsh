@@ -98,7 +98,7 @@ impl Shell {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let plan = match self.prepare_native_agent_command(line) {
+            let plan = match self.prepare_native_command(line, cancellation.is_some()) {
                 Ok(plan) => plan,
                 Err(error) => {
                     let message = format!(

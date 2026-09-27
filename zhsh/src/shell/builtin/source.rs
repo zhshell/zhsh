@@ -1,6 +1,30 @@
-//! `source`/`.`：用 Bash 执行脚本，并将可持续的会话状态（包括 PS0–PS4）同步回 zhsh。
+//! `source` / `.`：在当前会话加载脚本，各模式保留独立执行设施。
 //!
-//! 用法：`source 文件 [参数 ...]` 或 `. 文件 [参数 ...]`
+//! # 用法
+//! 默认模式：`source 文件 [参数 ...]` 或 `. 文件 [参数 ...]`。
+//! Native：`source 文件` 或 `. 文件`，仅一个文件参数。
+//!
+//! # 参数与选项
+//! 文件按现有 cwd/PATH 和路径规则定位，支持本命令的 ~ 路径。
+//! 默认模式将其余参数交给 Bash；Native 不支持位置参数，保留 1 MiB 文件与 16 层嵌套限制。
+//!
+//! # 模式与上下文
+//! 本文件的 execute 只供默认模式调用 Bash source loader。Native 经 shell/native/source.rs 逐行执行当前支持的 Native 命令，不能调用该 loader。
+//!
+//! # 示例
+//! 先准备可读的 example.zh，内容为一行 `export EXAMPLE=value`：
+//! ```sh
+//! source ./example.zh
+//! ```
+//! 两种模式成功后，后续命令均可读取导出的变量。
+//!
+//! # 输出与退出状态
+//! 默认模式脚本通过执行设施输出，返回脚本状态；定位/同步失败为 1，诊断写 stderr。
+//! Native 保留各行输出和最终状态；准备失败停止读取，取消、exit 或输出上限按 Native 执行层返回，不能将所有失败归为 1。
+//!
+//! # 状态影响
+//! 默认模式取得有效快照后同步目录、变量、别名、函数与提示符；Native 逐行提交，后续失败不回滚先前效果。
+//! 默认 Agent 不直接 source；Native 按整体命令确认并保留捕获/取消边界。委托模式管道 source 在 Bash 子环境处理。
 
 use super::super::{executor::source_loader, SessionState};
 use super::BuiltinResult;

@@ -27,6 +27,9 @@ impl fmt::Display for OperationId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OperationKey {
     version: u8,
+    pid_bindings: Vec<crate::shell::PidBinding>,
+    job_selection: Option<Vec<crate::shell::JobBinding>>,
+    job_bindings: Vec<(String, crate::shell::JobBinding)>,
     executable: AgentExecutionTarget,
     cwd: PathBuf,
     path_snapshot: Option<OsString>,
@@ -39,6 +42,9 @@ impl From<&AgentCommandPlan> for OperationKey {
     fn from(plan: &AgentCommandPlan) -> Self {
         Self {
             version: OPERATION_KEY_VERSION,
+            job_bindings: plan.job_bindings.clone(),
+            job_selection: plan.job_selection.clone(),
+            pid_bindings: plan.pid_bindings.clone(),
             executable: plan.executable.clone(),
             cwd: plan.cwd.clone(),
             path_snapshot: plan.path_snapshot.clone(),
@@ -78,6 +84,7 @@ enum TaskEventKind {
     ExecutionDispatched,
     ExecutionNotStarted,
     ExecutionStarted,
+    SessionOwnershipTransferred(crate::shell::JobBinding),
     StartUncertain,
     ExecutionFinished {
         termination: CommandTermination,
@@ -156,6 +163,7 @@ struct OperationProjection {
     exit_code: Option<i32>,
     evidence: Option<OutputEvidence>,
     supports_observation: bool,
+    retained_job: Option<crate::shell::JobBinding>,
 }
 
 impl OperationProjection {
@@ -173,6 +181,7 @@ impl OperationProjection {
             exit_code: None,
             evidence: None,
             supports_observation: false,
+            retained_job: None,
         }
     }
 }
@@ -334,6 +343,20 @@ impl TaskEventLog {
         self.append(phase, turn, Some(id), TaskEventKind::ExecutionStarted);
     }
 
+    pub(super) fn session_ownership_transferred(
+        &mut self,
+        id: OperationId,
+        phase: u8,
+        turn: i32,
+        job: crate::shell::JobBinding,
+    ) {
+        self.append(
+            phase,
+            turn,
+            Some(id),
+            TaskEventKind::SessionOwnershipTransferred(job),
+        );
+    }
     pub(super) fn start_uncertain(&mut self, id: OperationId, phase: u8, turn: i32) {
         self.append(phase, turn, Some(id), TaskEventKind::StartUncertain);
     }
@@ -408,6 +431,12 @@ impl TaskEventLog {
             let Some(operation) = self.project(id) else {
                 continue;
             };
+            if let Some(job) = operation.retained_job {
+                summaries.push(format!(
+                    "operation:{} retained_job=%{} job_key={} owner=session",
+                    operation.id, job.id, job.key
+                ));
+            }
             summaries.push(format!(
                 "operation:{} proposed={}.{} state={} safety={} decision={} authorization={} termination={} exit={} output_evidence={} observation={}",
                 operation.id,
@@ -559,6 +588,10 @@ impl TaskEventLog {
                 TaskEventKind::ExecutionStarted => {
                     projection.state = ExecutionState::Started;
                 }
+                TaskEventKind::SessionOwnershipTransferred(job) => {
+                    projection.retained_job = Some(job);
+                    projection.state = ExecutionState::Incomplete;
+                }
                 TaskEventKind::StartUncertain => {
                     projection.state = ExecutionState::StartUncertain;
                 }
@@ -597,6 +630,7 @@ fn termination_name(termination: CommandTermination) -> &'static str {
         CommandTermination::BackgroundTerminated => "background_terminated",
         CommandTermination::SupervisionFailed => "supervision_failed",
         CommandTermination::StoppedTerminated => "stopped_terminated",
+        CommandTermination::StoppedRetained => "stopped_retained",
         CommandTermination::Interrupted => "interrupted",
     }
 }

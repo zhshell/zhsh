@@ -1,6 +1,45 @@
-//! `zh`：zhsh 自身状态的顶级管理命令。
+//! `zh`：管理当前 zhsh 的 LLM、Codec、Safety 和授信状态。
 //!
-//! 用法：`zh [status|ls|use|llm|tier|trust|safety|codec|help]`
+//! # 用法
+//! `zh` 或 `zh status`；`zh ls`；`zh use 配置名`；`zh llm [-m|--modify] [配置名]`；
+//! `zh tier flash|standard|max`；`zh trust [-w] [balanced|confirm|trusted]`；
+//! `zh safety ...`；`zh codec ...`；`zh help`、`zh -h`、`zh --help`。
+//! 无参数等价于 status；具体插件形式见子模块 codec/safety/trust 的说明。
+//!
+//! # 参数与选项
+//! status 查询当前状态，ls 列出持久化配置；use 必须指定一个配置名。
+//! llm 创建配置，-m/--modify 修改已有配置，省略修改名称时使用当前配置；支持 -- 分隔名称。
+//! tier 切换并保存当前配置档位。status/ls/use/tier 接受单独 help/-h/--help；llm 的帮助为 -h/--help。
+//! trust 查询或修改策略，-w 写入配置；safety/codec 使用各自子命令参数，不恢复旧命令形式。
+//!
+//! # 模式与上下文
+//! 默认模式和 Native 复用本入口与原应用端口，不改变各自 Agent/管道策略。
+//! LLM 创建/修改及不完整配置修复依赖 UI；Codec/Safety 依赖注入的运行时，需确认的操作保留原终端条件。
+//!
+//! # 示例
+//! ```sh
+//! zh status
+//! zh ls
+//! ```
+//! 查询当前状态与已保存的配置名，不发起 LLM 请求。
+//!
+//! # 输出与退出状态
+//! 状态、清单、帮助和操作回执写 stdout，错误及部分警告写 stderr。
+//! 通常成功 0、参数/服务/持久化失败 1；LLM 向导取消为成功决策。
+//! Codec 安装取消与卸载取消的结果按各子命令现有语义处理，不能统一改为同一状态。
+//!
+//! # 状态影响
+//! status/ls/help 只读；use 更新活动配置标记与会话，llm 可保存草稿或启用配置，tier 持久化档位；
+//! trust/safety/codec 的磁盘及会话效果见各文件。配置仍位于原用户状态目录。
+//! 默认 Agent 仅允许无参数及单独 status/ls/trust/help/-h/--help；Native 仍经过 Safety/确认。
+//! 委托模式管道拒绝 use/llm/tier/授信修改和既有插件变更形式（llm 帮助等原例外保留），不改变原 pipeline_zh 策略。
+
+mod codec;
+mod safety;
+mod support;
+mod trust;
+
+use support::llm_config;
 
 use super::super::{SafetyManagementPort, SafetyManagementUi, SessionState};
 use super::BuiltinResult;
@@ -120,8 +159,7 @@ pub(crate) fn execute(
             if help_requested(rest) {
                 BuiltinResult::stdout(LS_HELP)
             } else {
-                no_extra("ls", rest)
-                    .unwrap_or_else(|| super::llm_config::list(shell, codec_runtime))
+                no_extra("ls", rest).unwrap_or_else(|| llm_config::list(shell, codec_runtime))
             }
         }
         "use" => {
@@ -133,9 +171,9 @@ pub(crate) fn execute(
                     "zh use: 需要一个配置名\n运行 `zh use -h` 查看用法。\n",
                 );
             };
-            super::llm_config::use_config(shell, name, codec_runtime, llm_config_ui)
+            llm_config::use_config(shell, name, codec_runtime, llm_config_ui)
         }
-        "llm" => super::llm_config::interactive(shell, rest, codec_runtime, llm_config_ui),
+        "llm" => llm_config::interactive(shell, rest, codec_runtime, llm_config_ui),
         "tier" => {
             if help_requested(rest) {
                 BuiltinResult::stdout(TIER_HELP)
@@ -143,9 +181,9 @@ pub(crate) fn execute(
                 set_tier(shell, rest, codec_runtime)
             }
         }
-        "trust" => super::trust::execute(shell, rest),
-        "safety" => super::safety::execute(shell, rest, safety_management_ui, safety_management),
-        "codec" => super::codec::execute(shell, rest, codec_runtime, codec_management_ui),
+        "trust" => trust::execute(shell, rest),
+        "safety" => safety::execute(shell, rest, safety_management_ui, safety_management),
+        "codec" => codec::execute(shell, rest, codec_runtime, codec_management_ui),
         "help" | "--help" | "-h" => no_extra("help", rest).unwrap_or_else(help),
         _ => BuiltinResult::error("zh: 未知命令；运行 `zh help`\n"),
     }

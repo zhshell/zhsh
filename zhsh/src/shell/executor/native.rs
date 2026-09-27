@@ -1,22 +1,28 @@
 //! Native 的内核直接进程执行。所有入口均不接收 SessionState。
 
 use super::super::native::{NativeExecutionError, NativeNotStartedReason};
-use super::{
-    captured, interactive, BashExecutor, CapturedExecution, OutputMode, AGENT_COMMAND_OUTPUT_LIMIT,
-};
-use crate::common::{AppError, CancellationToken};
+use super::interactive;
+#[cfg(test)]
+use super::OutputMode;
+use crate::common::AppError;
+#[cfg(test)]
 use std::collections::HashMap;
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::OsString;
+#[cfg(test)]
+use std::ffi::{CString, OsStr};
 use std::io;
+#[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use std::process::{Command, Stdio};
 
+#[cfg(test)]
 pub(in super::super) struct ExternalEnvironment<'a> {
     pub(in super::super) cwd: &'a Path,
     pub(in super::super) exported: &'a HashMap<String, String>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 struct ExecPayload {
     path: CString,
     _arguments: Vec<CString>,
@@ -27,12 +33,12 @@ struct ExecPayload {
 // SAFETY: pointer tables only reference the owned CString heap allocations. After construction
 // neither strings nor tables are mutated. Moving the payload does not move those allocations.
 // The pre_exec callback borrows it, and Command owns it for the entire spawn handshake.
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 unsafe impl Send for ExecPayload {}
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 unsafe impl Sync for ExecPayload {}
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 impl ExecPayload {
     fn execute(&self) -> io::Result<()> {
         // SAFETY: all strings and null-terminated pointer tables were built before fork and remain
@@ -44,6 +50,7 @@ impl ExecPayload {
     }
 }
 
+#[cfg(test)]
 fn command(
     environment: ExternalEnvironment<'_>,
     path: &Path,
@@ -56,7 +63,7 @@ fn command(
         NativeNotStartedReason::UnsupportedFormat,
         "当前平台尚不支持 Native 执行",
     ));
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     {
         use std::os::unix::{ffi::OsStrExt, process::CommandExt};
         let invalid = || {
@@ -136,7 +143,7 @@ fn command(
     }
 }
 
-fn spawn_error(error: io::Error) -> NativeExecutionError {
+pub(in super::super) fn spawn_error(error: io::Error) -> NativeExecutionError {
     if error.raw_os_error() == Some(libc::ENOENT) {
         return NativeExecutionError::not_started(
             NativeNotStartedReason::ExecutableNotFound,
@@ -170,81 +177,15 @@ pub(in super::super) fn requires_terminal(program: &str, arguments: &[OsString])
     terminal_mode(program, arguments).requires_terminal()
 }
 
+pub(in super::super) fn captures_output(program: &str, arguments: &[OsString]) -> bool {
+    terminal_mode(program, arguments) != interactive::TerminalMode::Opaque
+}
+
 fn terminal_mode(program: &str, arguments: &[OsString]) -> interactive::TerminalMode {
     let words = std::iter::once(program.to_owned())
         .chain(arguments.iter().map(|s| s.to_string_lossy().into_owned()))
         .collect::<Vec<_>>();
     interactive::terminal_mode_words(&words)
-}
-
-impl BashExecutor {
-    pub(in super::super) fn run_native_user(
-        &mut self,
-        environment: ExternalEnvironment<'_>,
-        path: &Path,
-        program: &str,
-        arguments: &[OsString],
-    ) -> Result<i32, NativeExecutionError> {
-        let mut command = command(environment, path, program, arguments, OutputMode::Inherit)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let child = command.spawn().map_err(spawn_error)?;
-        #[cfg(unix)]
-        {
-            self.foreground
-                .wait(child, program.to_owned())
-                .map_err(|e| NativeExecutionError::Execution(AppError::io(e.to_string())))
-        }
-        #[cfg(not(unix))]
-        {
-            let mut child = child;
-            child
-                .wait()
-                .map(|s| s.code().unwrap_or(1))
-                .map_err(|e| NativeExecutionError::Execution(AppError::io(e.to_string())))
-        }
-    }
-
-    pub(in super::super) fn run_native_agent(
-        &self,
-        environment: ExternalEnvironment<'_>,
-        path: &Path,
-        program: &str,
-        arguments: &[OsString],
-        cancellation: &CancellationToken,
-    ) -> Result<Option<CapturedExecution>, NativeExecutionError> {
-        let mode = terminal_mode(program, arguments);
-        let output = match mode {
-            interactive::TerminalMode::None => OutputMode::Capture,
-            interactive::TerminalMode::Captured => OutputMode::ForegroundCapture,
-            interactive::TerminalMode::Opaque => OutputMode::Inherit,
-        };
-        let mut command = command(environment, path, program, arguments, output)?;
-        let Some(mut child) = cancellation.spawn(&mut command).map_err(spawn_error)? else {
-            return Ok(None);
-        };
-        #[cfg(unix)]
-        if mode.requires_terminal() {
-            let pgid = child.id();
-            let terminal = interactive::ForegroundTerminal::give_to(pgid).map_err(|e| {
-                super::abort_foreground_spawn(&mut child, pgid, cancellation);
-                NativeExecutionError::Execution(AppError::io(e.to_string()))
-            })?;
-            let result = if mode == interactive::TerminalMode::Captured {
-                captured::wait_foreground_captured(child, cancellation)
-            } else {
-                Ok(captured::wait_interactive(child, cancellation))
-            };
-            drop(terminal);
-            return result.map(Some).map_err(NativeExecutionError::Execution);
-        }
-        captured::wait(child, cancellation, AGENT_COMMAND_OUTPUT_LIMIT)
-            .map(Some)
-            .map_err(NativeExecutionError::Execution)
-    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

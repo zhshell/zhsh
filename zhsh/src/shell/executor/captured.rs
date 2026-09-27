@@ -170,6 +170,7 @@ pub(super) fn wait_group(
             .unwrap_or(125)
     };
     Ok(CapturedExecution {
+        job: None,
         output: output.render(),
         total_output_bytes: output.total,
         exit_code,
@@ -339,6 +340,7 @@ pub(super) fn wait_group_foreground(
         statuses.last().and_then(|status| *status).unwrap_or(125)
     };
     Ok(CapturedExecution {
+        job: None,
         output: if captured {
             sanitize_terminal_transcript(&output.render())
         } else {
@@ -489,6 +491,7 @@ pub(super) fn wait_interactive(
     };
 
     CapturedExecution {
+        job: None,
         output: String::new(),
         total_output_bytes: 0,
         exit_code,
@@ -645,6 +648,7 @@ pub(super) fn wait_foreground_captured(
         leader_exit_code.unwrap_or(125)
     };
     Ok(CapturedExecution {
+        job: None,
         output: sanitize_terminal_transcript(&output.render()),
         total_output_bytes: output.total,
         exit_code,
@@ -849,6 +853,7 @@ fn wait_unix_with_options(
     };
 
     Ok(CapturedExecution {
+        job: None,
         output: if live {
             sanitize_terminal_transcript(&output.render())
         } else {
@@ -1184,6 +1189,7 @@ fn wait_portable(
     cancellation.finish(process_group);
     let status = status.ok_or_else(|| AppError::internal("Agent command lost its exit status"))?;
     Ok(CapturedExecution {
+        job: None,
         output: output.render(),
         total_output_bytes: output.total,
         exit_code: if cancellation.is_cancelled() {
