@@ -9,7 +9,8 @@
 //! 默认模式将其余参数交给 Bash；Native 不支持位置参数，保留 1 MiB 文件与 16 层嵌套限制。
 //!
 //! # 模式与上下文
-//! 本文件的 execute 只供默认模式调用 Bash source loader。Native 经 shell/native/source.rs 逐行执行当前支持的 Native 命令，不能调用该 loader。
+//! 本文件的 execute 只供默认模式调用 Bash source loader。Native 经 shell/native/source.rs 按完整简单命令单元执行当前支持的 Native 命令，不能调用该 loader。
+//! Native 启动时也复用这套按完整简单命令单元执行核心加载固定用户状态根下的 ~/.zhshrc；不会导入 Bash rc 或回退给 Bash。使用 `zhsh --native --norc` 可跳过自动加载，之后仍可显式 source。
 //!
 //! # 示例
 //! 先准备可读的 example.zh，内容为一行 `export EXAMPLE=value`：
@@ -23,7 +24,7 @@
 //! Native 保留各行输出和最终状态；准备失败停止读取，取消、exit 或输出上限按 Native 执行层返回，不能将所有失败归为 1。
 //!
 //! # 状态影响
-//! 默认模式取得有效快照后同步目录、变量、别名、函数与提示符；Native 逐行提交，后续失败不回滚先前效果。
+//! 默认模式取得有效快照后同步目录、变量、别名、函数与提示符；Native 按完整单元提交，后续失败不回滚先前效果。
 //! 默认 Agent 不直接 source；Native 按整体命令确认并保留捕获/取消边界。委托模式管道 source 在 Bash 子环境处理。
 
 use super::super::{executor::source_loader, SessionState};

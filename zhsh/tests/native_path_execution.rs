@@ -223,3 +223,88 @@ fn native_cli_builtins_update_directory_environment_and_exit_status() {
     assert!(stdout.contains("不调用 Bash"), "{stdout}");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn native_simple_units_execute_multiline_source_and_preserve_literal_argv() {
+    let root = std::env::temp_dir().join(format!("zhsh-s1-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    // 两种 Shell 均调用同一个外部 printf，避免内建实现差异影响参数传递的比较。
+    let text="/usr/bin/printf '<%s>\\n' \"a b\" '' a\\ b a\"b\"'c' x\\ \n/usr/bin/printf '<%s>\\n' '中文\n值' ab\\\ncd # ignored $x |\n";
+    let run = |native: bool, input: &str| {
+        let mut command = if native {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_zhsh"));
+            c.args(["--native", "--norc"]);
+            c
+        } else {
+            let mut c = Command::new("/bin/bash");
+            c.args(["--noprofile", "--norc"]);
+            c
+        };
+        let mut child = command
+            .env_clear()
+            .env("HOME", &root)
+            .env("PATH", "/usr/bin:/bin")
+            .env("LC_ALL", "C.UTF-8")
+            .env("ZHSH_TEST_SYSTEM_CODEC_DIR", root.join("missing"))
+            .current_dir(&root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let reference = run(false, text);
+    let native = run(true, text);
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(native.stdout, reference.stdout);
+    fs::create_dir_all(root.join("child")).unwrap();
+    fs::write(root.join("commands"),"cd child\nexport S1_FILE='line1\nline2'\n/usr/bin/false\n/usr/bin/printf 'SOURCE_OK\\n'\n/usr/bin/printf BAD > marker\nexport S1_LATE=yes\n").unwrap();
+    let output = run(
+        true,
+        "source commands\npwd\n/usr/bin/printenv S1_FILE\n/usr/bin/printenv S1_LATE\n",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("SOURCE_OK\n"), "{stdout}");
+    assert!(
+        stdout.contains(root.join("child").to_str().unwrap()),
+        "{stdout}"
+    );
+    assert!(stdout.contains("line1\nline2\n"), "{stdout}");
+    assert!(!stdout.contains("BAD"));
+    assert!(!stdout.contains("yes"));
+    assert!(!root.join("child/marker").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("第 6 行"));
+    // 启动文件共用完整命令单元读取器，其状态修改对后续标准输入命令可见。
+    fs::write(root.join(".zhshrc"), "export S1_BOOT='boot\nvalue'\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zhsh"))
+        .arg("--native")
+        .env_clear()
+        .env("HOME", &root)
+        .env("PATH", "/usr/bin:/bin")
+        .env("ZHSH_TEST_SYSTEM_CODEC_DIR", root.join("missing"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"/usr/bin/printenv S1_BOOT\n")
+        .unwrap();
+    let startup = child.wait_with_output().unwrap();
+    assert_eq!(startup.stdout, b"boot\nvalue\n");
+    fs::remove_dir_all(root).unwrap();
+}

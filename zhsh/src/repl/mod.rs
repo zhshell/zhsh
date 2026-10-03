@@ -34,6 +34,7 @@ use std::time::Instant;
 pub struct RunOptions {
     trace_agent: bool,
     native: bool,
+    native_no_rc: bool,
 }
 
 impl RunOptions {
@@ -41,6 +42,16 @@ impl RunOptions {
     #[must_use]
     pub fn with_native(mut self, enabled: bool) -> Self {
         self.native = enabled;
+        if !enabled {
+            self.native_no_rc = false;
+        }
+        self
+    }
+
+    /// 在 Native 模式下跳过固定用户启动文件的自动加载。
+    #[must_use]
+    pub fn with_native_no_rc(mut self, enabled: bool) -> Self {
+        self.native_no_rc = enabled;
         self
     }
 
@@ -77,6 +88,10 @@ pub fn run() -> i32 {
 ///
 /// 除 [`RunOptions`] 明确启用的诊断外，其启动、持久化和退出语义与 [`run`] 相同。
 pub fn run_with_options(options: RunOptions) -> i32 {
+    if options.native_no_rc && !options.native {
+        eprintln!("zhsh: --norc 只能与 --native 一起使用");
+        return 2;
+    }
     let user_home = user_home::UserHomeState::from_process();
     if let Some(reason) = user_home.reason() {
         eprintln!("zhsh: 用户状态已禁用: {reason}");
@@ -91,6 +106,7 @@ pub fn run_with_options(options: RunOptions) -> i32 {
         );
     }
     let mut shell = Shell::from_startup(user_home.path(), Arc::clone(&codec_runtime));
+    let interactive = io::stdin().is_terminal();
     if options.native {
         shell.enable_native_jobs(std::io::IsTerminal::is_terminal(&std::io::stdin()));
         if let Err(error) = shell.install_native_job_signals() {
@@ -111,8 +127,50 @@ pub fn run_with_options(options: RunOptions) -> i32 {
             eprintln!("{warning}");
         }
     }
-    shell.load_rc();
-    let agent = agent::new_agent(user_home.path(), codec_runtime, options.trace_agent);
+    if options.native {
+        if let Err(error) = install_interrupt_handler(true) {
+            eprintln!("zhsh: {error}");
+            return 1;
+        }
+        #[cfg(unix)]
+        if interactive {
+            if let Err(error) = install_suspend_guard() {
+                eprintln!("zhsh: 无法安装终端暂停防护: {error}");
+                return 1;
+            }
+        }
+    }
+
+    let agent = if options.native {
+        let agent = agent::new_agent(
+            user_home.path(),
+            Arc::clone(&codec_runtime),
+            options.trace_agent,
+        );
+        shell.set_safety_management(agent.safety_management_port());
+        shell.set_agent_runtime_error(agent.unavailable_reason().map(str::to_owned));
+        if !options.native_no_rc {
+            shell.load_native_startup_rc();
+        }
+        if shell.should_exit {
+            return shell.last_exit;
+        }
+        if let Some(error) = shell.native_job_failure() {
+            eprintln!("zhsh: Native 作业监督失败: {error}");
+            return 1;
+        }
+        agent
+    } else {
+        shell.load_rc();
+        let agent = agent::new_agent(
+            user_home.path(),
+            Arc::clone(&codec_runtime),
+            options.trace_agent,
+        );
+        shell.set_safety_management(agent.safety_management_port());
+        shell.set_agent_runtime_error(agent.unavailable_reason().map(str::to_owned));
+        agent
+    };
     if options.trace_agent {
         if let Some(path) = agent.invalid_response_diagnostics_path() {
             eprintln!(
@@ -123,11 +181,9 @@ pub fn run_with_options(options: RunOptions) -> i32 {
             eprintln!("zhsh: Agent 原始响应诊断无法启用: 用户状态目录不可用");
         }
     }
-    shell.set_safety_management(agent.safety_management_port());
     for notice in agent.safety_startup_notices() {
         agent::present(agent::AgentEvent::SafetyNotice { message: notice });
     }
-    shell.set_agent_runtime_error(agent.unavailable_reason().map(str::to_owned));
     if let Some(reason) = agent.unavailable_reason() {
         eprintln!("zhsh: Agent 已禁用: {reason}");
     }
@@ -146,8 +202,37 @@ pub fn run_with_options(options: RunOptions) -> i32 {
             eprintln!("zhsh: 无法读取标准输入: {error}");
             return 1;
         }
-        for line in input.lines() {
-            process(&mut shell, &agent, line, &[], options.native);
+        let mut lines = input.split_inclusive('\n').peekable();
+        while let Some(line) = lines.next() {
+            if options.native
+                && input::route(line).is_some_and(|r| r.kind == input::InputKind::UserCommand)
+            {
+                let mut reader = shell::NativeSimpleReader::default();
+                let mut next = line;
+                loop {
+                    match reader.feed(next, lines.peek().is_none(), None) {
+                        Ok(shell::NativeReadResult::Complete(unit)) => {
+                            shell.run_native_unit(unit, &[]);
+                            break;
+                        }
+                        Ok(shell::NativeReadResult::NeedMore) => {
+                            next = lines.next().unwrap_or("");
+                        }
+                        Err(error) => {
+                            shell.report_native_input_error(&error);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                process(
+                    &mut shell,
+                    &agent,
+                    line.trim_end_matches('\n'),
+                    &[],
+                    options.native,
+                );
+            }
             if shell.should_exit {
                 break;
             }
@@ -155,21 +240,19 @@ pub fn run_with_options(options: RunOptions) -> i32 {
         return shell.last_exit;
     }
 
-    // 信号处理
-    let native_signals = options.native;
-    if let Err(error) = ctrlc::set_handler(move || {
-        if native_signals {
-            Shell::native_interrupt();
+    // 默认模式在历史行为对应的交互启动阶段安装信号处理；Native 已在启动文件前安装。
+    if !options.native {
+        if let Err(error) = install_interrupt_handler(false) {
+            eprintln!("zhsh: {error}");
+            return 1;
         }
-        agent::request_cancel();
-    }) {
-        eprintln!("zhsh: 无法安装 Ctrl-C 处理器: {error}");
-        return 1;
     }
     #[cfg(unix)]
-    if let Err(error) = install_suspend_guard() {
-        eprintln!("zhsh: 无法安装终端暂停防护: {error}");
-        return 1;
+    if !options.native {
+        if let Err(error) = install_suspend_guard() {
+            eprintln!("zhsh: 无法安装终端暂停防护: {error}");
+            return 1;
+        }
     }
 
     eprintln!("zh [{}]", agent::model(&shell));
@@ -248,7 +331,56 @@ pub fn run_with_options(options: RunOptions) -> i32 {
         };
         match rl.readline(&prompt_renderer.prompt(&shell, context)) {
             Ok(mut line) => {
-                while input_needs_continuation(&line, options.native) {
+                let mut native_unit = None;
+                if options.native
+                    && input::route(&line).is_some_and(|r| r.kind == input::InputKind::UserCommand)
+                {
+                    let mut reader = shell::NativeSimpleReader::default();
+                    let mut chunk = format!("{line}\n");
+                    loop {
+                        match reader.feed(&chunk, false, None) {
+                            Ok(shell::NativeReadResult::Complete(unit)) => {
+                                if let Err(error) = unit.check_trailing(&format!("{line}\n")) {
+                                    shell.report_native_input_error(&error);
+                                    continue 'repl;
+                                }
+                                native_unit = Some(unit);
+                                break;
+                            }
+                            Err(error) => {
+                                shell.report_native_input_error(&error);
+                                continue 'repl;
+                            }
+                            Ok(shell::NativeReadResult::NeedMore) => {
+                                match rl
+                                    .readline(&prompt_renderer.secondary_prompt(&shell, context))
+                                {
+                                    Ok(continuation) => {
+                                        line.push('\n');
+                                        line.push_str(&continuation);
+                                        chunk = format!("{continuation}\n");
+                                    }
+                                    Err(ReadlineError::Interrupted) => {
+                                        eprintln!();
+                                        continue 'repl;
+                                    }
+                                    Err(ReadlineError::Eof) => {
+                                        if let Err(error) = reader.feed("", true, None) {
+                                            shell.report_native_input_error(&error);
+                                        }
+                                        eprintln!();
+                                        continue 'repl;
+                                    }
+                                    Err(error) => {
+                                        eprintln!("Error: {error}");
+                                        break 'repl;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                while native_unit.is_none() && input_needs_continuation(&line, options.native) {
                     match rl.readline(&prompt_renderer.secondary_prompt(&shell, context)) {
                         Ok(continuation) => {
                             line.push('\n');
@@ -285,7 +417,11 @@ pub fn run_with_options(options: RunOptions) -> i32 {
                     Err(error) => eprintln!("zhsh: 无法记录历史: {error}"),
                 }
                 let history = history_entries(&rl);
-                process(&mut shell, &agent, &line, &history, options.native);
+                if let Some(unit) = native_unit {
+                    shell.run_native_unit(unit, &history);
+                } else {
+                    process(&mut shell, &agent, &line, &history, options.native);
+                }
                 command_number = command_number.saturating_add(1);
                 // 内建命令可能改变 cwd、PATH、alias 或 LLM 配置；下一次读取前刷新补全器。
                 rl.set_helper(Some(completion::ShellCompleter::new(
@@ -319,6 +455,15 @@ pub fn run_with_options(options: RunOptions) -> i32 {
         }
     }
     shell.last_exit
+}
+
+fn install_interrupt_handler(native: bool) -> Result<(), ctrlc::Error> {
+    ctrlc::set_handler(move || {
+        if native {
+            Shell::native_interrupt();
+        }
+        agent::request_cancel();
+    })
 }
 
 #[cfg(unix)]
@@ -426,7 +571,7 @@ fn process(
     };
 
     if native && routed.kind == input::InputKind::UserCommand {
-        return shell.run_native_with_history(&routed.original, history);
+        return shell.run_native_with_history(input, history);
     }
 
     if routed.kind == input::InputKind::AgentInput {

@@ -345,3 +345,33 @@ fn stopped_sleep_can_resume_in_background_then_foreground() {
     assert!(!foreground.contains("stale job"), "{foreground}");
     assert!(!t.command("jobs").contains("sleep 100"));
 }
+
+#[test]
+fn native_ps2_collects_one_command_and_cancellation_discards_it() {
+    let mut t = Terminal::new();
+    t.command("export PS2='S1_MORE> '");
+    t.master
+        .write_all(b"/usr/bin/printf '<%s>\\n' 'first\r")
+        .unwrap();
+    t.until("S1_MORE> ");
+    t.master.write_all("中文'\r".as_bytes()).unwrap();
+    let output = t.prompt();
+    assert!(output.contains("<first\r\n中文>\r\n"), "{output}");
+    t.master
+        .write_all(b"/usr/bin/printf '<%s>\\n' ab\\\r")
+        .unwrap();
+    t.until("S1_MORE> ");
+    t.master.write_all(b"cd\r").unwrap();
+    let output = t.prompt();
+    assert!(output.contains("<abcd>\r\n"), "{output}");
+    t.master
+        .write_all(b"export S1_CANCEL='unfinished\r")
+        .unwrap();
+    t.until("S1_MORE> ");
+    t.master.write_all(b"\x03").unwrap();
+    t.prompt();
+    let output = t.command("/usr/bin/printenv S1_CANCEL");
+    assert!(!output.contains("unfinished"), "{output}");
+    let history = std::fs::read_to_string(t.home.join(".zh_history")).unwrap();
+    assert!(history.contains("first\\n中文"), "{history}");
+}

@@ -629,7 +629,7 @@ pub(super) fn native_usage(name: &str) -> Option<(&'static str, &'static str, &'
             "支持作业编号、当前/前一及命令前缀或子串；不重新执行原命令。",
         ))
     } else if matches!(name, "source" | ".") {
-        Some(("source 文件 / . 文件", "在当前会话逐行执行 Native 命令", "支持当前 Native 字面命令与内建；不调用 Bash。不支持的语法会停止读取，此前的状态修改保留；位置参数尚未实现。"))
+        Some(("source 文件 / . 文件", "在当前会话逐完整单元执行 Native 命令", "支持当前 Native 命令子集；不调用 Bash。不支持的语法会停止读取，此前的状态修改保留；位置参数尚未实现。Native 启动也按此规则加载固定用户状态根下的 ~/.zhshrc；使用 `zhsh --native --norc` 可跳过自动加载，之后仍可显式 source。"))
     } else {
         COMMANDS
             .iter()

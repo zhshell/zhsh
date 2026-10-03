@@ -1,9 +1,10 @@
 //! Native 外部调用准备和 Shell 适配；会话仍由 Shell 持有。
 
 use super::builtin::BuiltinResult;
-use super::command::{self, args, resolver};
+use super::command::{self, resolver};
 use super::{CommandTermination, OutputEvidence};
 
+mod input;
 mod source;
 use super::executor::native as execution;
 use super::{AgentCommandPlan, AgentExecutionTarget, CapturedExecution, Shell};
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub(crate) enum NativePreparationError {
+    EmptyInput,
     InvalidInput(String),
     NotFound,
     CannotExecute(String),
@@ -23,7 +25,7 @@ pub(crate) enum NativePreparationError {
 impl NativePreparationError {
     pub(crate) fn code(&self) -> i32 {
         match self {
-            Self::InvalidInput(_) => 2,
+            Self::InvalidInput(_) | Self::EmptyInput => 2,
             Self::NotFound => 127,
             Self::CannotExecute(_) => 126,
             Self::ReadFailed(_) | Self::JobTarget(_) => 1,
@@ -40,6 +42,7 @@ impl std::fmt::Display for NativePreparationError {
             | Self::CannotExecute(s)
             | Self::ReadFailed(s)
             | Self::JobTarget(s) => f.write_str(s),
+            Self::EmptyInput => f.write_str("Native run 没有可执行命令"),
             Self::NotFound => f.write_str("Native 未找到可执行程序"),
         }
     }
@@ -102,20 +105,6 @@ pub(super) struct PreparedNativeExternal {
     pub(super) path_snapshot: Option<OsString>,
 }
 
-fn prepare(
-    input: &str,
-    cwd: &Path,
-    environment: &HashMap<String, String>,
-) -> Result<Option<PreparedNativeExternal>, NativePreparationError> {
-    let original = input.trim().to_owned();
-    let words = args::parse_native_literal(&original).map_err(|e| {
-        NativePreparationError::InvalidInput(match e {
-            args::ParseError::NeedsBash => "Native 本期不支持该 Shell 语法或展开".into(),
-            args::ParseError::Syntax(message) => message.into(),
-        })
-    })?;
-    prepare_words(original, &words, cwd, environment)
-}
 fn prepare_words(
     original: String,
     words: &[String],
@@ -167,6 +156,73 @@ impl Shell {
     pub(crate) fn install_native_job_signals(&self) -> std::io::Result<()> {
         self.jobs().install_signals()
     }
+    /// 使用进程启动时固定的用户状态根加载 Native 启动文件。
+    pub(crate) fn load_native_startup_rc(&mut self) {
+        let Some(home) = self.state.user_home().map(Path::to_path_buf) else {
+            return;
+        };
+        let path = home.join(".zhshrc");
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                let diagnostic = source::NativeStartupDiagnostic {
+                    line: None,
+                    reason: safe_diagnostic(&error.to_string()),
+                };
+                self.state.last_exit = 1;
+                self.report_native_startup_rc_failure(&path, 1, Some(&diagnostic));
+                return;
+            }
+            Ok(_) => {}
+        }
+
+        match self.run_native_source_path(&path, &[], None, 0, source::SourceOrigin::NativeStartup)
+        {
+            Ok(run) => {
+                self.state.last_exit = run.execution.exit_code;
+                self.report_native_startup_rc_failure(
+                    &path,
+                    run.execution.exit_code,
+                    run.startup_diagnostic.as_ref(),
+                );
+            }
+            Err(error) => {
+                self.state.last_exit = error.code();
+                let diagnostic = source::NativeStartupDiagnostic {
+                    line: None,
+                    reason: safe_diagnostic(&error.to_string()),
+                };
+                self.report_native_startup_rc_failure(&path, error.code(), Some(&diagnostic));
+            }
+        }
+    }
+
+    fn report_native_startup_rc_failure(
+        &self,
+        path: &Path,
+        status: i32,
+        diagnostic: Option<&source::NativeStartupDiagnostic>,
+    ) {
+        if self.state.should_exit || status == 0 {
+            return;
+        }
+
+        let path = crate::common::terminal_safe_path(path);
+        if let Some(diagnostic) = diagnostic {
+            let location = diagnostic
+                .line
+                .map(|line| format!("{path}:{line}"))
+                .unwrap_or(path);
+            eprintln!(
+                "zhsh: Native 启动配置未完整加载\n  位置：{location}\n  原因：{}\n  影响：错误后的配置行未执行；失败前已生效的配置效果不会回滚。Shell 将继续启动。\n  处理：修复配置后重启，或用 `zhsh --native --norc` 跳过自动加载。",
+                safe_diagnostic(&diagnostic.reason)
+            );
+        } else {
+            eprintln!(
+                "zhsh: Native 启动配置执行结束，返回状态 {status}\n  文件：{path}\n  说明：配置执行效果会保留，Shell 将继续启动。\n  处理：检查配置命令，或用 `zhsh --native --norc` 跳过自动加载。"
+            );
+        }
+    }
     pub(crate) fn set_native_notice_sink(
         &self,
         sink: std::sync::Arc<dyn Fn(String) + Send + Sync>,
@@ -198,11 +254,21 @@ impl Shell {
     }
 
     pub(crate) fn run_native_with_history(&mut self, input: &str, history: &[String]) -> i32 {
-        if input.trim().is_empty() {
-            return self.state.last_exit;
-        }
-        let plan = match self.prepare_native_command(input, false) {
-            Ok(plan) => plan,
+        let unit = match super::language::parse_single(input, None) {
+            Ok(unit) => unit,
+            Err(error) => return self.report_native_input_error(&error),
+        };
+        self.run_native_unit(unit, history)
+    }
+
+    pub(crate) fn run_native_unit(
+        &mut self,
+        unit: super::language::SimpleUnit,
+        history: &[String],
+    ) -> i32 {
+        let plan = match self.prepare_native_unit(unit, false, None) {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return self.state.last_exit,
             Err(error) => {
                 eprintln!("zhsh: {}", safe_diagnostic(&error.to_string()));
                 self.state.last_exit = error.code();
@@ -221,51 +287,12 @@ impl Shell {
         self.state.last_exit
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_native_agent_command(
         &self,
         input: &str,
     ) -> Result<AgentCommandPlan, NativePreparationError> {
         self.prepare_native_command(input, true)
-    }
-    fn prepare_native_command(
-        &self,
-        input: &str,
-        bind_jobs: bool,
-    ) -> Result<AgentCommandPlan, NativePreparationError> {
-        let original = input.trim();
-        let parse_builtin = |text: &str| {
-            args::parse_native_builtin_literal(text).map_err(|error| {
-                NativePreparationError::InvalidInput(match error {
-                    args::ParseError::Syntax(message) => message.into(),
-                    args::ParseError::NeedsBash => "Native 不支持该 Shell 语法或展开".into(),
-                })
-            })
-        };
-        let words = parse_builtin(original)?;
-        // Preserve the existing builtin-before-alias ordering. Aliases only rewrite the command
-        // before preparation, never after authorization, and their bodies obey Native syntax.
-        let expanded = if words
-            .first()
-            .is_some_and(|name| command::is_native_builtin(name))
-        {
-            original.to_owned()
-        } else {
-            self.state.expand_alias(original)
-        };
-        let words = parse_builtin(&expanded)?;
-        if words
-            .first()
-            .is_none_or(|name| !command::is_native_builtin(name))
-        {
-            let mut plan = prepare(&expanded, &self.state.cwd, &self.state.env)?
-                .map(AgentCommandPlan::from_native_external)
-                .ok_or_else(|| {
-                    NativePreparationError::InvalidInput("Native command 不能为空".into())
-                })?;
-            plan.original = original.to_owned();
-            return Ok(plan);
-        }
-        self.prepare_native_words(original, &words, 0, bind_jobs)
     }
     fn prepare_native_words(
         &self,
@@ -364,7 +391,9 @@ impl Shell {
     }
 
     pub(crate) fn record_native_preparation_failure(&mut self, error: &NativePreparationError) {
-        self.state.last_exit = error.code();
+        if !matches!(error, NativePreparationError::EmptyInput) {
+            self.state.last_exit = error.code();
+        }
     }
 
     pub(crate) fn native_builtin_requires_confirmation(&self, plan: &AgentCommandPlan) -> bool {

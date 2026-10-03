@@ -7,16 +7,36 @@ zhsh \- 支持非 ASCII Agent 输入的 AI 增强 Shell
 .SH 概要
 .B zhsh
 .RI [ --help | --version | --trace-agent | --native ]
+.br
+.B zhsh --native --norc
+.br
+.B zhsh --norc --native
 .SH 选项
 .TP
 .B \-\-native
 启用独立的 Native PATH 执行旁路，默认 Bash 委托模式不变。
 ASCII 用户命令和模型 run 命令按会话 PATH 或显式相对/绝对路径定位并直接执行内核支持的程序（包括 ELF 和 shebang 脚本）；
-支持空格、引号和反斜杠组成的字面参数，现有内建命令在当前 zhsh 会话执行。
-source/. 逐行执行当前 Native 命令，遇不支持语法停止，保留此前修改；不支持位置参数或完整 Bash 脚本。
+支持空格、引号和反斜杠组成的字面参数、行尾注释及 PS2 续行，现有内建命令在当前 zhsh 会话执行。
+启动时自动执行固定用户状态根下的
+.IR ~/.zhshrc ，
+使用 Native 与
+.B source
+相同的当前语法和完整简单命令单元状态提交规则，不隐式启动 Bash 或导入 Bash rc。
+遇不支持语法停止当前文件并保留此前修改；不支持位置参数或完整 Bash 脚本。
 尚不支持通用变量展开、管道、重定向或无 shebang 文本的自动解释。
 模型命令仍经原有 Safety 和授权流程，执行结果反馈模型；不支持的输入明确拒绝，不内部回退 Bash。
 此入口不是完整 Shell；使用 exit 或 EOF 退出。
+.TP
+.B \-\-native \-\-norc
+以 Native 模式启动，但跳过固定用户状态根下
+.IR ~/.zhshrc
+的自动读取和执行。仍加载父进程环境及其他用户配置，不清除继承的 Agent 授信等级；之后可以显式执行
+.BR source 。
+也接受
+.BR \-\-norc \-\-native
+顺序。单独使用
+.B --norc
+、重复选项或其他未支持参数组合返回状态码 2。
 .TP
 .BR \-h , " " \-\-help
 显示进程级用法并退出，不启动 Shell。
@@ -564,7 +584,7 @@ LLM 响应、模型命令、命令输出、启动文件和配置向导字段
 不会进入历史，也不会自动成为后续 LLM 上下文。
 .SH 提示符
 zhsh 支持 Bash 的 PS0 到 PS4 会话变量。
-PS1 生成主提示符；PS2 在 Bash 输入尚未完成时生成续行提示符；
+PS1 生成主提示符；PS2 在 Bash 输入或 Native 简单命令的引用/转义尚未完成时生成续行提示符；
 PS0 在完整命令读取后、执行前显示。PS3 和 PS4 随会话状态传入实际 Bash，
 分别供 select 和 xtrace 使用。
 .PP

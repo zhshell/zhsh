@@ -1202,7 +1202,8 @@ fn run_phase_with_confirmation(
                         task.total_turns,
                     ));
                 }
-                let prepared = shell.prepare_native_agent_command(command);
+                let prepared =
+                    shell.prepare_native_agent_command_with_cancel(command, &cancellation);
                 if cancellation.is_cancelled() {
                     task.flow = AgentFlowState::Finished;
                     return PhaseResult::Finished(RunResult::cancelled(
